@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Balon Avı</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+/* Balon Avı — MediaPipe Pose ile çocuklar için hareket oyunu prototipi
+   Modlar: "Karakter" (iskelete bağlı çizgi karakter) ve "Benim görüntüm" (segmentasyonla kesilmiş çocuk görüntüsü)
+   Yakalama: bilek + işaret parmağı ortası = avuç; düşen balonla daire çarpışması */
+:root{--ink:#1b2a4a;--accent:#ff4f7a;--sun:#ffd23f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#5ec8ff;font-family:'Baloo 2',system-ui,sans-serif;color:var(--ink)}
+canvas#game{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+.hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
+.hud[hidden]{display:none}
+.pill{background:#fff;border-radius:999px;padding:4px 18px;font-size:clamp(20px,3vw,32px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:8px 16px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
+.msg{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 22px;border-radius:16px;font-size:clamp(18px,2.6vw,28px);font-weight:700;text-align:center;max-width:92vw}
+.msg[hidden]{display:none}
+.screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(27,42,74,.35);padding:16px;overflow:auto}
+.screen[hidden]{display:none}
+.card{background:#fff;border-radius:28px;padding:clamp(20px,4vw,40px);max-width:560px;width:100%;text-align:center;box-shadow:0 10px 0 rgba(0,0,0,.15)}
+h1{margin:0 0 4px;font-size:clamp(40px,7vw,64px);line-height:1;color:var(--accent)}
+p{margin:6px 0 14px;font-size:18px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+.opt{border:4px solid #e3edf7;border-radius:20px;padding:12px 10px;background:#f6fbff;cursor:pointer;font:inherit;font-size:20px;font-weight:700;color:var(--ink);min-height:44px}
+.opt small{display:block;font-size:14px;font-weight:500}
+.opt[aria-pressed=true]{border-color:var(--accent);background:#fff0f4}
+.go{border:0;border-radius:999px;background:var(--accent);color:#fff;font:inherit;font-size:28px;font-weight:800;padding:8px 44px;margin:6px;cursor:pointer;box-shadow:0 6px 0 #c42a52}
+.go.alt{background:#4d6bff;box-shadow:0 6px 0 #2f47c2}
+.go:active{transform:translateY(4px);box-shadow:none}
+.go:disabled{opacity:.6;cursor:wait}
+.note{font-size:14px;opacity:.75;margin:14px 0 0}
+button:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
+@media(max-width:480px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<video id="cam" playsinline muted></video>
+
+<div class="hud" id="hud" hidden>
+  <div class="pill" id="score">Puan: 0</div>
+  <button id="swap" type="button">Mod değiştir</button>
+  <div class="pill" id="time">60</div>
+</div>
+<div class="msg" id="msg" hidden></div>
+
+<div class="screen" id="menu">
+  <div class="card">
+    <h1>Balon Avı</h1>
+    <p>Kollarını salla, düşen balonları elinle patlat!</p>
+    <div class="row" role="group" aria-label="Oyun modu">
+      <button class="opt" data-mode="char" aria-pressed="true">Karakter<small>Seni bir çizgi karakter taklit eder</small></button>
+      <button class="opt" data-mode="self" aria-pressed="false">Benim görüntüm<small>Sen oyunun içindesin</small></button>
+    </div>
+    <div class="row" role="group" aria-label="Zorluk">
+      <button class="opt" data-diff="easy" aria-pressed="true">Kolay<small>Yavaş ve büyük balonlar</small></button>
+      <button class="opt" data-diff="normal" aria-pressed="false">Normal<small>Daha hızlı balonlar</small></button>
+    </div>
+    <button class="go" id="start">Başla</button>
+    <p class="note">Kameranın 2–3 adım önünde dur, kolların görünsün. Görüntü bilgisayarından çıkmaz, her şey tarayıcıda işlenir. Kamera yoksa fare veya dokunmayla da oynanır.</p>
+  </div>
+</div>
+
+<div class="screen" id="over" hidden>
+  <div class="card">
+    <h1>Süper!</h1>
+    <p id="result">0 puan topladın</p>
+    <button class="go" id="again">Tekrar oyna</button>
+    <button class="go alt" id="back">Ana menü</button>
+  </div>
+</div>
+
+<script type="module">
+import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+{
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const ROUND = 60;
+const COLORS = ['#ff4f7a','#ffb627','#3ddc84','#4da3ff','#b46cff','#ff7b39'];
+
+const $ = id => document.getElementById(id);
+const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
+let W = 0, H = 0;
+function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W*d; cv.height = H*d; ctx.setTransform(d,0,0,d,0,0); }
+addEventListener('resize', resize); resize();
+
+/* ---------- durum ---------- */
+let mode = 'char', diff = 'easy', phase = 'menu';
+let score = 0, timeLeft = ROUND, spawnT = 0, countT = 0;
+let balloons = [], parts = [], texts = [];
+const clouds = Array.from({length:5}, (_,i) => ({x:Math.random(), y:.08+i*.07, s:.4+Math.random()*.6, k:.6+Math.random()*.6}));
+
+/* ---------- ses ---------- */
+let ac = null;
+function popSound(gold){
+  if(!ac) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(gold ? 800 : 480 + Math.random()*200, t);
+  o.frequency.exponentialRampToValueAtTime(gold ? 2000 : 1300, t + .1);
+  g.gain.setValueAtTime(.25, t); g.gain.exponentialRampToValueAtTime(.001, t + .18);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t + .2);
+}
+
+/* ---------- kamera + MediaPipe ---------- */
+let landmarker = null, camOK = false, lms = null, lastVT = -1;
+const cut = document.createElement('canvas'), cctx = cut.getContext('2d', {willReadFrequently:true});
+let hasCut = false;
+
+async function initCam(){
+  const s = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640}, height:{ideal:480}, facingMode:'user'}, audio:false});
+  video.srcObject = s; await video.play(); camOK = true;
+}
+async function initPose(){
+  const fs = await FilesetResolver.forVisionTasks(WASM);
+  const opts = d => ({baseOptions:{modelAssetPath:MODEL, delegate:d}, runningMode:'VIDEO', numPoses:1,
+    outputSegmentationMasks:true, minPoseDetectionConfidence:.4, minPosePresenceConfidence:.4, minTrackingConfidence:.4});
+  try { landmarker = await PoseLandmarker.createFromOptions(fs, opts('GPU')); }
+  catch(e){ landmarker = await PoseLandmarker.createFromOptions(fs, opts('CPU')); }
+}
+function detect(){
+  if(!landmarker || !camOK || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  landmarker.detectForVideo(video, performance.now(), res => {
+    lms = (res.landmarks && res.landmarks[0]) || null;
+    const m = res.segmentationMasks && res.segmentationMasks[0];
+    if(mode === 'self' && m) buildCut(m); else if(!m) hasCut = false;
+  });
+}
+/* maske: video karesini kopyala, maske değerini alfa kanalına yaz */
+function buildCut(mask){
+  const mw = mask.width, mh = mask.height, m = mask.getAsFloat32Array();
+  if(cut.width !== mw || cut.height !== mh){ cut.width = mw; cut.height = mh; }
+  cctx.drawImage(video, 0, 0, mw, mh);
+  const img = cctx.getImageData(0, 0, mw, mh), d = img.data;
+  for(let i = 0, j = 3; i < m.length; i++, j += 4){
+    const a = m[i]; d[j] = a > .6 ? 255 : a < .25 ? 0 : (a - .25) / .35 * 255;
+  }
+  cctx.putImageData(img, 0, 0); hasCut = true;
+}
+/* video ekranı "cover" şeklinde kaplar; koordinatlar aynalanır */
+function camRect(){
+  const vw = video.videoWidth || 640, vh = video.videoHeight || 480, s = Math.max(W/vw, H/vh);
+  return {x:(W - vw*s)/2, y:(H - vh*s)/2, w:vw*s, h:vh*s};
+}
+
+/* yumuşatılmış noktalar */
+const S = Array.from({length:33}, () => ({x:0, y:0, v:0}));
+let sOn = false;
+function smooth(){
+  if(!lms){ sOn = false; return; }
+  const R = camRect();
+  for(let i = 0; i < 33; i++){
+    const l = lms[i], x = R.x + (1 - l.x)*R.w, y = R.y + l.y*R.h, s = S[i];
+    if(!sOn){ s.x = x; s.y = y; } else { s.x += (x - s.x)*.55; s.y += (y - s.y)*.55; }
+    s.v = l.visibility ?? 1;
+  }
+  sOn = true;
+}
+
+/* ---------- eller ---------- */
+const ptr = {x:0, y:0, on:false};
+cv.addEventListener('pointermove', e => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; });
+cv.addEventListener('pointerdown', e => { ptr.x = e.clientX; ptr.y = e.clientY; ptr.on = true; });
+cv.addEventListener('pointerup', e => { if(e.pointerType !== 'mouse') ptr.on = false; });
+cv.addEventListener('pointerleave', () => { ptr.on = false; });
+
+let handR = 40;
+function getHands(){
+  const out = [];
+  if(sOn){
+    const sw = Math.hypot(S[11].x - S[12].x, S[11].y - S[12].y);
+    handR = Math.max(32, sw*.4);
+    for(const [w, i] of [[15,19],[16,20]]){
+      const a = S[w], b = S[i];
+      if(Math.min(a.v, b.v) > .3) out.push({x:(a.x + b.x)/2, y:(a.y + b.y)/2, r:handR});
+    }
+  }
+  if(ptr.on) out.push({x:ptr.x, y:ptr.y, r:36});
+  return out;
+}
+
+/* ---------- oyun mantığı ---------- */
+function spawn(){
+  const base = Math.max(34, Math.min(W, H)*.065) * (diff === 'easy' ? 1.2 : 1);
+  const r = base * (.85 + Math.random()*.3);
+  const prog = 1 + (ROUND - timeLeft)/ROUND * .6;
+  balloons.push({x:r + Math.random()*(W - 2*r), y:-r*2.4, r, c:COLORS[Math.random()*COLORS.length | 0],
+    vy:(diff === 'easy' ? 55 : 95) * prog * Math.max(.7, H/750), ph:Math.random()*6.28, gold:Math.random() < .08});
+}
+function burst(b){
+  const col = b.gold ? '#ffc93c' : b.c;
+  for(let i = 0; i < 16; i++){
+    const a = Math.random()*6.28, sp = 120 + Math.random()*260;
+    parts.push({x:b.x, y:b.y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:.7, c:i % 3 ? col : '#fff'});
+  }
+  texts.push({x:b.x, y:b.y, life:.9, t:b.gold ? '+3' : '+1'});
+}
+function update(dt, t){
+  if(phase === 'count'){ countT -= dt; if(countT <= 0){ phase = 'play'; spawnT = 0; } }
+  if(phase === 'play'){
+    timeLeft -= dt;
+    if(timeLeft <= 0){ timeLeft = 0; endGame(); }
+    spawnT -= dt;
+    if(spawnT <= 0){ spawn(); spawnT = (diff === 'easy' ? 1.15 : .75) * (1 - (ROUND - timeLeft)/ROUND*.35); }
+  }
+  const hands = phase === 'play' ? getHands() : [];
+  for(const b of balloons){
+    b.y += b.vy*dt; b.x += Math.sin(t*1.4 + b.ph)*22*dt;
+    for(const h of hands){
+      if(Math.hypot(h.x - b.x, h.y - b.y) < b.r + h.r*.6){ b.dead = true; score += b.gold ? 3 : 1; burst(b); popSound(b.gold); break; }
+    }
+    if(b.y - b.r > H) b.dead = true;
+  }
+  balloons = balloons.filter(b => !b.dead);
+  for(const p of parts){ p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 600*dt; p.life -= dt; }
+  parts = parts.filter(p => p.life > 0);
+  for(const x of texts){ x.y -= 60*dt; x.life -= dt; }
+  texts = texts.filter(x => x.life > 0);
+  $('score').textContent = 'Puan: ' + score;
+  $('time').textContent = Math.ceil(timeLeft);
+}
+
+/* ---------- çizim ---------- */
+function shade(hex, k){
+  const n = parseInt(hex.slice(1), 16), f = c => Math.max(0, Math.min(255, Math.round(c*k)));
+  return `rgb(${f(n >> 16)},${f(n >> 8 & 255)},${f(n & 255)})`;
+}
+function cloud(x, y, k){
+  ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.beginPath();
+  for(const [dx, dy, r] of [[0,0,34],[38,-14,40],[80,0,32],[40,12,34]]){ ctx.moveTo(x + dx*k + r*k, y + dy*k); ctx.arc(x + dx*k, y + dy*k, r*k, 0, 7); }
+  ctx.fill();
+}
+function drawSky(t){
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#3fb6ff'); g.addColorStop(1, '#d4f3ff');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,210,63,.35)'; ctx.beginPath(); ctx.arc(W - 90, 90, 70, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(W - 90, 90, 48, 0, 7); ctx.fill();
+  for(const c of clouds){ const x = ((c.x*(W + 300) + t*c.s*25) % (W + 300)) - 150; cloud(x, c.y*H, c.k); }
+  ctx.fillStyle = '#8fdc75'; ctx.beginPath(); ctx.ellipse(W*.22, H*1.04, W*.5, H*.2, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#6cc957'; ctx.beginPath(); ctx.ellipse(W*.85, H*1.06, W*.45, H*.18, 0, 0, 7); ctx.fill();
+}
+function star(x, y, r){
+  ctx.fillStyle = '#fff'; ctx.beginPath();
+  for(let i = 0; i < 10; i++){ const a = -Math.PI/2 + i*Math.PI/5, rr = i % 2 ? r*.45 : r; ctx.lineTo(x + Math.cos(a)*rr, y + Math.sin(a)*rr); }
+  ctx.fill();
+}
+function drawBalloon(b, t){
+  const {x, y, r} = b, col = b.gold ? '#ffc93c' : b.c;
+  ctx.strokeStyle = 'rgba(27,42,74,.45)'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(x, y + r*1.1); ctx.quadraticCurveTo(x + Math.sin(t*3 + b.ph)*12, y + r*1.7, x, y + r*2.3); ctx.stroke();
+  ctx.fillStyle = shade(col, .8); ctx.beginPath(); ctx.moveTo(x, y + r*.95); ctx.lineTo(x - r*.13, y + r*1.14); ctx.lineTo(x + r*.13, y + r*1.14); ctx.fill();
+  const g = ctx.createRadialGradient(x - r*.3, y - r*.4, r*.08, x, y, r*1.15);
+  g.addColorStop(0, '#fff'); g.addColorStop(.22, col); g.addColorStop(1, shade(col, .7));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, r*.86, r, 0, 0, 7); ctx.fill();
+  if(b.gold) star(x, y + r*.05, r*.38);
+}
+function limb(a, b, w, col){ ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+const ok = (i, th = .45) => S[i].v > th;
+function drawChar(){
+  if(!sOn || !ok(11, .3) || !ok(12, .3)) return;
+  const ls = S[11], rs = S[12], sw = Math.max(40, Math.hypot(ls.x - rs.x, ls.y - rs.y)), w = sw*.3;
+  const hipOK = ok(23) && ok(24);
+  const lh = hipOK ? S[23] : {x:ls.x + (rs.x - ls.x)*.12, y:ls.y + sw*1.35};
+  const rh = hipOK ? S[24] : {x:rs.x + (ls.x - rs.x)*.12, y:rs.y + sw*1.35};
+  // bacaklar
+  for(const [h, k, a, hp] of [[23,25,27,lh],[24,26,28,rh]]){
+    if(hipOK && ok(k)){ limb(hp, S[k], w*1.1, '#4d6bff'); if(ok(a)){ limb(S[k], S[a], w, '#4d6bff'); limb(S[a], {x:S[a].x, y:S[a].y + 4}, w*1.2, '#1b2a4a'); } }
+  }
+  // gövde
+  ctx.fillStyle = ctx.strokeStyle = '#ff4f7a'; ctx.lineJoin = 'round'; ctx.lineWidth = w*.9;
+  ctx.beginPath(); ctx.moveTo(ls.x, ls.y); ctx.lineTo(rs.x, rs.y); ctx.lineTo(rh.x, rh.y); ctx.lineTo(lh.x, lh.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  // kollar
+  for(const [s, e, wr] of [[11,13,15],[12,14,16]]){
+    if(ok(e, .3)){ limb(S[s], S[e], w*.95, '#ff4f7a'); if(ok(wr, .3)) limb(S[e], S[wr], w*.8, '#ffcf9e'); }
+  }
+  // baş
+  const earOK = ok(7, .3) && ok(8, .3);
+  const hc = earOK ? {x:(S[7].x + S[8].x)/2, y:(S[7].y + S[8].y)/2} : {x:S[0].x, y:S[0].y - sw*.08};
+  const ang = earOK ? Math.atan2(S[8].y - S[7].y, S[8].x - S[7].x) : 0, hr = sw*.45;
+  limb({x:(ls.x + rs.x)/2, y:(ls.y + rs.y)/2}, hc, w*.8, '#ffcf9e');
+  ctx.save(); ctx.translate(hc.x, hc.y); ctx.rotate(ang);
+  ctx.fillStyle = '#ffcf9e'; ctx.beginPath(); ctx.arc(0, 0, hr, 0, 7); ctx.fill();
+  ctx.fillStyle = '#5a3a22'; ctx.beginPath(); ctx.arc(0, -hr*.1, hr*1.03, Math.PI*1.05, Math.PI*1.95); ctx.fill();
+  ctx.fillStyle = '#1b2a4a'; for(const sx of [-.35, .35]){ ctx.beginPath(); ctx.arc(sx*hr, hr*.05, hr*.11, 0, 7); ctx.fill(); }
+  ctx.fillStyle = 'rgba(255,79,122,.35)'; for(const sx of [-.55, .55]){ ctx.beginPath(); ctx.arc(sx*hr, hr*.35, hr*.14, 0, 7); ctx.fill(); }
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(2, hr*.08); ctx.beginPath(); ctx.arc(0, hr*.25, hr*.3, .2*Math.PI, .8*Math.PI); ctx.stroke();
+  ctx.restore();
+}
+function drawHands(){
+  for(const h of getHands()){
+    ctx.fillStyle = mode === 'char' ? '#fff' : 'rgba(255,255,255,.25)';
+    ctx.strokeStyle = mode === 'char' ? '#1b2a4a' : '#fff'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.r*.6, 0, 7); ctx.fill(); ctx.stroke();
+  }
+}
+function drawCam(R){
+  if(mode === 'self' && hasCut){
+    ctx.save(); ctx.translate(R.x + R.w, R.y); ctx.scale(-1, 1); ctx.drawImage(cut, 0, 0, R.w, R.h); ctx.restore();
+  }
+  if(mode === 'char' && camOK && video.readyState >= 2){
+    const pw = Math.min(200, W*.22), ph = pw*.75, px = W - pw - 14, py = H - ph - 14;
+    ctx.save(); ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 14); ctx.clip();
+    ctx.translate(px + pw, py); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph); ctx.restore();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 14); ctx.stroke();
+  }
+}
+function draw(t){
+  drawSky(t);
+  const R = camRect();
+  drawCam(R);
+  if(mode === 'char') drawChar();
+  for(const b of balloons) drawBalloon(b, t);
+  drawHands();
+  for(const p of parts){ ctx.globalAlpha = Math.max(0, p.life/.7); ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for(const x of texts){ ctx.globalAlpha = Math.min(1, x.life*2); ctx.font = '800 40px "Baloo 2",sans-serif'; ctx.lineWidth = 6; ctx.strokeStyle = '#1b2a4a'; ctx.strokeText(x.t, x.x, x.y); ctx.fillStyle = '#fff'; ctx.fillText(x.t, x.x, x.y); }
+  ctx.globalAlpha = 1;
+  if(phase === 'count'){
+    const n = Math.ceil(countT), f = countT % 1;
+    ctx.font = `800 ${Math.round(Math.min(W, H)*.3*(1 + f*.3))}px "Baloo 2",sans-serif`;
+    ctx.lineWidth = 12; ctx.strokeStyle = '#1b2a4a'; ctx.strokeText(n, W/2, H/2); ctx.fillStyle = '#ffd23f'; ctx.fillText(n, W/2, H/2);
+  }
+}
+
+/* ---------- yönlendirme mesajı ---------- */
+let note = '';
+function framing(){
+  if(phase === 'menu' || phase === 'end') return '';
+  if(!camOK) return note;
+  if(!landmarker) return 'Hareket algılayıcı yükleniyor…';
+  if(!sOn || !ok(11, .4) || !ok(12, .4)) return 'Kameranın önüne geç, seni göremiyorum!';
+  if(mode === 'char' && !(ok(23) && ok(24))) return 'Biraz geri git, vücudun görünsün';
+  return '';
+}
+
+/* ---------- döngü ---------- */
+let last = performance.now();
+function loop(){
+  const now = performance.now(), dt = Math.min(.05, (now - last)/1000); last = now;
+  detect(); smooth(); update(dt, now/1000); draw(now/1000);
+  const m = framing(), el = $('msg'); el.hidden = !m; if(m) el.textContent = m;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ---------- menü ---------- */
+function pick(attr, val){ document.querySelectorAll(`[data-${attr}]`).forEach(b => b.setAttribute('aria-pressed', b.dataset[attr] === val)); }
+document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => { mode = b.dataset.mode; pick('mode', mode); }));
+document.querySelectorAll('[data-diff]').forEach(b => b.addEventListener('click', () => { diff = b.dataset.diff; pick('diff', diff); }));
+$('swap').addEventListener('click', () => { mode = mode === 'char' ? 'self' : 'char'; pick('mode', mode); });
+
+function newRound(){
+  score = 0; timeLeft = ROUND; balloons = []; parts = []; texts = [];
+  phase = 'count'; countT = 3;
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
+}
+function endGame(){
+  phase = 'end'; $('hud').hidden = true; $('over').hidden = false;
+  $('result').textContent = `${score} puan topladın!`;
+  $('again').focus();
+}
+$('start').addEventListener('click', async () => {
+  const btn = $('start'); btn.disabled = true; btn.textContent = 'Hazırlanıyor…';
+  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
+  if(!camOK){
+    try { await initCam(); }
+    catch(e){ note = 'Kamera açılamadı — fare veya dokunmayla oynayabilirsin'; }
+  }
+  if(camOK && !landmarker){
+    try { await initPose(); }
+    catch(e){ camOK = false; note = 'Hareket algılayıcı yüklenemedi (internet bağlantısını kontrol et) — fare ile oynayabilirsin'; }
+  }
+  btn.disabled = false; btn.textContent = 'Başla';
+  newRound();
+});
+$('again').addEventListener('click', newRound);
+$('back').addEventListener('click', () => { phase = 'menu'; $('over').hidden = true; $('menu').hidden = false; balloons = []; });
+}
+</script>
+</body>
