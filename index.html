@@ -61,6 +61,10 @@ button:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
       <button class="opt" data-diff="easy" aria-pressed="true">Kolay<small>Yavaş ve büyük balonlar</small></button>
       <button class="opt" data-diff="normal" aria-pressed="false">Normal<small>Daha hızlı balonlar</small></button>
     </div>
+    <div class="row" role="group" aria-label="Kontrol">
+      <button class="opt" data-ctrl="hand" aria-pressed="true">İşaret parmağı<small>Parmağındaki iğneyle patlat</small></button>
+      <button class="opt" data-ctrl="head" aria-pressed="false">Kafa<small>Şapkandaki iğneyle patlat</small></button>
+    </div>
     <button class="go" id="start">Başla</button>
     <p class="note">Kameranın 2–3 adım önünde dur, kolların görünsün. Görüntü bilgisayarından çıkmaz, her şey tarayıcıda işlenir. Kamera yoksa fare veya dokunmayla da oynanır.</p>
   </div>
@@ -90,7 +94,7 @@ function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth;
 addEventListener('resize', resize); resize();
 
 /* ---------- durum ---------- */
-let mode = 'char', diff = 'easy', phase = 'menu';
+let mode = 'char', diff = 'easy', ctrl = 'hand', phase = 'menu';
 let score = 0, timeLeft = ROUND, spawnT = 0, countT = 0;
 let balloons = [], parts = [], texts = [];
 const clouds = Array.from({length:5}, (_,i) => ({x:Math.random(), y:.08+i*.07, s:.4+Math.random()*.6, k:.6+Math.random()*.6}));
@@ -170,19 +174,57 @@ cv.addEventListener('pointerdown', e => { ptr.x = e.clientX; ptr.y = e.clientY; 
 cv.addEventListener('pointerup', e => { if(e.pointerType !== 'mouse') ptr.on = false; });
 cv.addEventListener('pointerleave', () => { ptr.on = false; });
 
-let handR = 40;
-function getHands(){
-  const out = [];
-  if(sOn){
-    const sw = Math.hypot(S[11].x - S[12].x, S[11].y - S[12].y);
-    handR = Math.max(32, sw*.4);
-    for(const [w, i] of [[15,19],[16,20]]){
-      const a = S[w], b = S[i];
-      if(Math.min(a.v, b.v) > .3) out.push({x:(a.x + b.x)/2, y:(a.y + b.y)/2, r:handR});
+/* ---------- iğneler (işaret parmağı veya kafa) ----------
+   El kısa süre kaybolursa (titreme) son konum 0.4 sn tutulur; böylece iğne yanıp sönmez. */
+const HOLD_MS = 400;
+const hold = {L:null, Lt:0, R:null, Rt:0, H:null, Ht:0};
+const shoulderW = () => Math.max(40, Math.hypot(S[11].x - S[12].x, S[11].y - S[12].y));
+function headInfo(){
+  const sw = shoulderW(), earOK = ok(7, .3) && ok(8, .3);
+  if(!earOK && !ok(0, .4)) return null;
+  const hc = earOK ? {x:(S[7].x + S[8].x)/2, y:(S[7].y + S[8].y)/2} : {x:S[0].x, y:S[0].y - sw*.08};
+  const ang = earOK ? Math.atan2(S[8].y - S[7].y, S[8].x - S[7].x) : 0;
+  return {hc, ang, hr:sw*.45};
+}
+function getTools(){
+  const out = [], now = performance.now();
+  if(sOn && ok(11, .3) && ok(12, .3)){
+    const sw = shoulderW();
+    if(ctrl === 'hand'){
+      const L = sw*.7;
+      for(const [side, w, i, e] of [['L',15,19,13],['R',16,20,14]]){
+        if(ok(i, .35) && ok(w, .35)){
+          const I = S[i], Wr = S[w];
+          let dx = I.x - Wr.x, dy = I.y - Wr.y, d = Math.hypot(dx, dy);
+          if(d < sw*.05 && ok(e, .3)){ dx = Wr.x - S[e].x; dy = Wr.y - S[e].y; d = Math.hypot(dx, dy); }
+          if(d < 1){ dx = 0; dy = -1; d = 1; }
+          hold[side] = {kind:'needle', bx:I.x, by:I.y, tx:I.x + dx/d*L, ty:I.y + dy/d*L};
+          hold[side + 't'] = now;
+        }
+        if(hold[side] && now - hold[side + 't'] < HOLD_MS) out.push(hold[side]);
+      }
+    } else {
+      const h = headInfo();
+      if(h){
+        const ux = Math.sin(h.ang), uy = -Math.cos(h.ang), apex = h.hr*1.75;
+        const bx = h.hc.x + ux*apex, by = h.hc.y + uy*apex;
+        hold.H = {kind:'head', ...h, ux, uy, bx, by, tx:bx + ux*h.hr*.9, ty:by + uy*h.hr*.9};
+        hold.Ht = now;
+      }
+      if(hold.H && now - hold.Ht < HOLD_MS) out.push(hold.H);
     }
   }
-  if(ptr.on) out.push({x:ptr.x, y:ptr.y, r:36});
+  if(ptr.on) out.push({kind:'needle', bx:ptr.x, by:ptr.y + 55, tx:ptr.x, ty:ptr.y});
   return out;
+}
+function segDist(px, py, ax, ay, bx, by){
+  const vx = bx - ax, vy = by - ay, l = vx*vx + vy*vy || 1;
+  const k = Math.max(0, Math.min(1, ((px - ax)*vx + (py - ay)*vy)/l));
+  return Math.hypot(px - ax - vx*k, py - ay - vy*k);
+}
+function hits(tl, b){
+  if(segDist(b.x, b.y, tl.bx, tl.by, tl.tx, tl.ty) < b.r*.9) return true;
+  return tl.kind === 'head' && Math.hypot(b.x - tl.hc.x, b.y - tl.hc.y) < b.r*.8 + tl.hr;
 }
 
 /* ---------- oyun mantığı ---------- */
@@ -209,11 +251,11 @@ function update(dt, t){
     spawnT -= dt;
     if(spawnT <= 0){ spawn(); spawnT = (diff === 'easy' ? 1.15 : .75) * (1 - (ROUND - timeLeft)/ROUND*.35); }
   }
-  const hands = phase === 'play' ? getHands() : [];
+  const tools = phase === 'play' ? getTools() : [];
   for(const b of balloons){
     b.y += b.vy*dt; b.x += Math.sin(t*1.4 + b.ph)*22*dt;
-    for(const h of hands){
-      if(Math.hypot(h.x - b.x, h.y - b.y) < b.r + h.r*.6){ b.dead = true; score += b.gold ? 3 : 1; burst(b); popSound(b.gold); break; }
+    for(const tl of tools){
+      if(hits(tl, b)){ b.dead = true; score += b.gold ? 3 : 1; burst(b); popSound(b.gold); break; }
     }
     if(b.y - b.r > H) b.dead = true;
   }
@@ -279,6 +321,10 @@ function drawChar(){
   for(const [s, e, wr] of [[11,13,15],[12,14,16]]){
     if(ok(e, .3)){ limb(S[s], S[e], w*.95, '#ff4f7a'); if(ok(wr, .3)) limb(S[e], S[wr], w*.8, '#ffcf9e'); }
   }
+  // eldivenler
+  for(const i of [19, 20]){
+    if(ok(i, .35)){ ctx.fillStyle = '#fff'; ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(S[i].x, S[i].y, sw*.13, 0, 7); ctx.fill(); ctx.stroke(); }
+  }
   // baş
   const earOK = ok(7, .3) && ok(8, .3);
   const hc = earOK ? {x:(S[7].x + S[8].x)/2, y:(S[7].y + S[8].y)/2} : {x:S[0].x, y:S[0].y - sw*.08};
@@ -292,11 +338,33 @@ function drawChar(){
   ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(2, hr*.08); ctx.beginPath(); ctx.arc(0, hr*.25, hr*.3, .2*Math.PI, .8*Math.PI); ctx.stroke();
   ctx.restore();
 }
-function drawHands(){
-  for(const h of getHands()){
-    ctx.fillStyle = mode === 'char' ? '#fff' : 'rgba(255,255,255,.25)';
-    ctx.strokeStyle = mode === 'char' ? '#1b2a4a' : '#fff'; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(h.x, h.y, h.r*.6, 0, 7); ctx.fill(); ctx.stroke();
+function drawNeedle(tl){
+  const dx = tl.tx - tl.bx, dy = tl.ty - tl.by, L = Math.hypot(dx, dy) || 1, ux = dx/L, uy = dy/L, nx = -uy, ny = ux;
+  const ex = tl.tx - ux*14, ey = tl.ty - uy*14;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(tl.bx, tl.by); ctx.lineTo(ex, ey); ctx.stroke();
+  ctx.strokeStyle = '#dfe7f0'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(tl.bx, tl.by); ctx.lineTo(ex, ey); ctx.stroke();
+  ctx.fillStyle = '#dfe7f0'; ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(tl.tx, tl.ty); ctx.lineTo(ex + nx*4, ey + ny*4); ctx.lineTo(ex - nx*4, ey - ny*4); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#ff4f7a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(tl.bx, tl.by, 10, 0, 7); ctx.fill(); ctx.stroke();
+}
+function drawHat(tl){
+  const {hc, hr, ux, uy} = tl, px = -uy, py = ux;
+  const b1 = {x:hc.x + ux*hr*.55 + px*hr*.7, y:hc.y + uy*hr*.55 + py*hr*.7};
+  const b2 = {x:hc.x + ux*hr*.55 - px*hr*.7, y:hc.y + uy*hr*.55 - py*hr*.7};
+  ctx.fillStyle = '#ffd23f'; ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 4; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(tl.bx, tl.by); ctx.lineTo(b1.x, b1.y); ctx.lineTo(b2.x, b2.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#4d6bff';
+  for(const [f, s] of [[.35, .25], [.55, -.2], [.75, .1]]){
+    const x = hc.x + ux*hr*(.55 + 1.2*f) + px*hr*s*(1 - f), y = hc.y + uy*hr*(.55 + 1.2*f) + py*hr*s*(1 - f);
+    ctx.beginPath(); ctx.arc(x, y, hr*.08, 0, 7); ctx.fill();
+  }
+}
+function drawTools(){
+  for(const tl of getTools()){
+    if(tl.kind === 'head') drawHat(tl);
+    drawNeedle(tl);
   }
 }
 function drawCam(R){
@@ -316,7 +384,7 @@ function draw(t){
   drawCam(R);
   if(mode === 'char') drawChar();
   for(const b of balloons) drawBalloon(b, t);
-  drawHands();
+  drawTools();
   for(const p of parts){ ctx.globalAlpha = Math.max(0, p.life/.7); ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill(); }
   ctx.globalAlpha = 1;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -336,6 +404,8 @@ function framing(){
   if(!camOK) return note;
   if(!landmarker) return 'Hareket algılayıcı yükleniyor…';
   if(!sOn || !ok(11, .4) || !ok(12, .4)) return 'Kameranın önüne geç, seni göremiyorum!';
+  if(ctrl === 'head' && !ok(0, .4)) return 'Yüzün kameraya dönük olsun';
+  if(ctrl === 'hand' && !ok(19, .35) && !ok(20, .35)) return 'Ellerini kaldır, parmağını göster!';
   if(mode === 'char' && !(ok(23) && ok(24))) return 'Biraz geri git, vücudun görünsün';
   return '';
 }
@@ -354,6 +424,7 @@ requestAnimationFrame(loop);
 function pick(attr, val){ document.querySelectorAll(`[data-${attr}]`).forEach(b => b.setAttribute('aria-pressed', b.dataset[attr] === val)); }
 document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => { mode = b.dataset.mode; pick('mode', mode); }));
 document.querySelectorAll('[data-diff]').forEach(b => b.addEventListener('click', () => { diff = b.dataset.diff; pick('diff', diff); }));
+document.querySelectorAll('[data-ctrl]').forEach(b => b.addEventListener('click', () => { ctrl = b.dataset.ctrl; pick('ctrl', ctrl); hold.L = hold.R = hold.H = null; }));
 $('swap').addEventListener('click', () => { mode = mode === 'char' ? 'self' : 'char'; pick('mode', mode); });
 
 function newRound(){
