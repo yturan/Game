@@ -36,6 +36,10 @@ p{margin:6px 0 12px;font-size:18px}
 .go:active{transform:translateY(4px);box-shadow:none}
 .note{font-size:14px;opacity:.75;margin:10px 0 0}
 .note a{color:var(--ink)}
+.dev{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}
+.chip{border:2px solid #e3edf7;border-radius:999px;background:#f6fbff;color:var(--ink);font:inherit;font-size:15px;font-weight:700;padding:6px 14px;min-height:44px;cursor:pointer}
+.chip[aria-pressed=true]{border-color:#4d6bff;background:#eef1ff}
+#recBox[hidden]{display:none}
 button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
 </style>
 </head>
@@ -66,6 +70,9 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
       <button class="game" data-game="dance"><i class="dot" style="background:#ffb627"></i><div><b>Donma Dansı</b><span>Müzik çalınca dans et, müzik durunca heykel gibi don.</span></div></button>
     </div>
     <p class="note">Görüntü cihazdan çıkmaz, her şey tarayıcıda işlenir. Kamera yoksa klavyeyle denenebilir: Boşluk zıpla/çırp, ↓ çömel, → koş; balonlar fareyle de patlar.</p>
+    <div class="dev" role="group" aria-label="Geliştirici ayarları">
+      <button class="chip" id="devDebug"></button><button class="chip" id="devRec"></button><button class="chip" id="devModel"></button>
+    </div>
   </div>
 </div>
 
@@ -95,6 +102,10 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
     <p id="result">0 puan</p>
     <button class="go" id="again">Tekrar oyna</button>
     <button class="go alt" id="back">Oyunlar</button>
+    <div id="recBox" hidden>
+      <p class="note">Hareket kaydı hazır (<span id="recInfo"></span>). Sadece iskelet noktaları var, görüntü yok.</p>
+      <button class="go alt" id="recDl">Kaydı indir</button>
+    </div>
   </div>
 </div>
 
@@ -157,55 +168,231 @@ const music = {
 };
 
 /* ================= KAMERA + POZ ================= */
-let landmarker = null, camOK = false, lms = null, lastVT = -1, asp = 4/3, note2 = '';
+const MODELS = {
+  lite:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+  full:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
+};
+const DEV = {debug:false, rec:false, model:'lite'};
+try { Object.assign(DEV, JSON.parse(localStorage.getItem('hareketDev') || '{}')); } catch(e){}
+const saveDev = () => { try { localStorage.setItem('hareketDev', JSON.stringify(DEV)); } catch(e){} };
+let landmarker = null, loadedModel = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '';
 async function initCam(){
   const s = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640}, height:{ideal:480}, facingMode:'user'}, audio:false});
   video.srcObject = s; await video.play(); camOK = true;
 }
 async function initPose(){
+  if(landmarker && loadedModel === DEV.model) return;
+  if(landmarker){ try { landmarker.close(); } catch(e){} landmarker = null; }
   const fs = await FilesetResolver.forVisionTasks(WASM);
-  const opts = d => ({baseOptions:{modelAssetPath:MODEL, delegate:d}, runningMode:'VIDEO', numPoses:1,
+  const opts = d => ({baseOptions:{modelAssetPath:MODELS[DEV.model] || MODEL, delegate:d}, runningMode:'VIDEO', numPoses:2,
     outputSegmentationMasks:true, minPoseDetectionConfidence:.4, minPosePresenceConfidence:.4, minTrackingConfidence:.4});
-  try { landmarker = await PoseLandmarker.createFromOptions(fs, opts('GPU')); }
-  catch(e){ landmarker = await PoseLandmarker.createFromOptions(fs, opts('CPU')); }
+  try { landmarker = await PoseLandmarker.createFromOptions(fs, opts('GPU')); ENG.delegate = 'GPU'; }
+  catch(e){ landmarker = await PoseLandmarker.createFromOptions(fs, opts('CPU')); ENG.delegate = 'CPU'; }
+  loadedModel = DEV.model;
+}
+/* Kişi kilidi: birden çok kişi varsa bir önceki karedeki kişiye en yakın olanı seç */
+let lock = null;
+function pickPerson(arr){
+  if(!arr || !arr.length) return -1;
+  let best = -1, bs = Infinity;
+  arr.forEach((l, i) => {
+    const cx = (l[11].x + l[12].x)/2, cy = (l[11].y + l[12].y)/2, s = Math.hypot(l[11].x - l[12].x, l[11].y - l[12].y);
+    const sc = lock ? Math.hypot(cx - lock.x, cy - lock.y) + Math.abs(s - lock.s)*2 : -s + Math.abs(cx - .5)*.3;
+    if(sc < bs){ bs = sc; best = i; }
+  });
+  const l = arr[best];
+  lock = {x:(l[11].x + l[12].x)/2, y:(l[11].y + l[12].y)/2, s:Math.hypot(l[11].x - l[12].x, l[11].y - l[12].y)};
+  return best;
 }
 function detect(){
   if(!landmarker || !camOK || video.readyState < 2 || video.currentTime === lastVT) return;
   lastVT = video.currentTime;
-  landmarker.detectForVideo(video, performance.now(), res => {
-    lms = (res.landmarks && res.landmarks[0]) || null;
-    const m = res.segmentationMasks && res.segmentationMasks[0];
+  const ts = performance.now();
+  landmarker.detectForVideo(video, ts, res => {
+    const arr = res.landmarks || [], idx = pickPerson(arr);
+    ENG.persons = arr.length;
+    engineUpdate(idx >= 0 ? arr[idx] : null, ts/1000);
+    const m = idx >= 0 && res.segmentationMasks && res.segmentationMasks[idx];
     if(m && curKey === 'balloon' && bopt.mode === 'self' && phase !== 'menu') buildCut(m);
   });
 }
-/* S: aynalanmış, en-boy düzeltilmiş, yumuşatılmış noktalar (x: 0..asp, y: 0..1); P: bir önceki kare */
-const S = Array.from({length:33}, () => ({x:0, y:0, v:0}));
-const P = Array.from({length:33}, () => ({x:0, y:0}));
-let sOn = false;
-function smooth(){
-  if(!lms){ sOn = false; return; }
-  asp = (video.videoWidth || 640)/(video.videoHeight || 480);
-  for(let i = 0; i < 33; i++){
-    const l = lms[i], s = S[i], x = (1 - l.x)*asp, y = l.y;
-    if(!sOn){ s.x = x; s.y = y; } else { s.x += (x - s.x)*.6; s.y += (y - s.y)*.6; }
-    if(!sOn){ P[i].x = s.x; P[i].y = s.y; }
-    s.v = l.visibility ?? 1;
+
+/* ================= HAREKET MOTORU =================
+   Katman 1: modelin çıkarımları (33 nokta) → One Euro filtresi → S
+   Katman 2: türetilmiş özellikler, son 1,5 sn halka tamponda (ENG.buf)
+   Katman 3: durum makineleri + olay geçmişi + kişisel istatistikler
+   Olaylar iki aşamalı: 'jump' (erken, hemen) → 'jumpOk' / 'jumpCancel' (doğrulama) */
+class OneEuro {
+  constructor(minC = 1.0, beta = 20, dC = 1){ this.minC = minC; this.beta = beta; this.dC = dC; this.x = null; this.dx = 0; this.t = 0; }
+  a(c, dt){ const r = 2*Math.PI*c*dt; return r/(r + 1); }
+  f(x, t){
+    if(this.x === null){ this.x = x; this.t = t; this.dx = 0; return x; }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    this.dx += ((x - this.x)/dt - this.dx)*this.a(this.dC, dt);
+    this.x += (x - this.x)*this.a(this.minC + this.beta*Math.abs(this.dx), dt);
+    return this.x;
   }
-  sOn = true;
 }
+const FX = Array.from({length:33}, () => new OneEuro()), FY = Array.from({length:33}, () => new OneEuro());
+const S = Array.from({length:33}, () => ({x:0, y:0, v:0}));
+let sOn = false;
 const ok = (i, th = .5) => sOn && S[i].v > th;
 const ang = (a, b) => (Math.atan2(b.y - a.y, b.x - a.x)*180/Math.PI + 360) % 360;
 const adiff = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
-
-/* ================= ORTAK HAREKET SİNYALLERİ ================= */
 const MOT = [0,11,12,13,14,15,16,23,24,25,26];
-const sig = {ok:false, sw:.3, base:null, calib:false, dy:0, armed:true, jump:false, duck:false,
-  runE:0, run:0, flapArmed:false, flap:false, motion:0, aL:0, aR:0, armsOK:false, L:[11,13,15], R:[12,14,16]};
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const median = a => { if(!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+const ENG = {
+  buf:[], log:[], pending:[], persons:0, delegate:'-', fpsN:0, fpsT:0, fps:0,
+  lastT:0, lostT:-9, prevS:null,
+  base:null, sw0:null, B:null, calib:false, noise:.3,
+  st:'ground', t0:0, peak:0, cool:0, duck:false, duckEnd:-9, jumpThr:.10, jumps:[],
+  flapArmed:false, flapT:0, run:0, motion:0, dy:0, vy:0, scaleOK:true,
+  reset(){ this.base = null; this.sw0 = null; this.st = 'ground'; this.duck = false; this.pending.length = 0; this.flapArmed = false; },
+  emit(name, data){
+    this.pending.push(name);
+    this.log.push({t:this.lastT, name, data}); if(this.log.length > 8) this.log.shift();
+    if(REC.on) REC.events.push([+(this.lastT - REC.t0).toFixed(3), name]);
+  }
+};
+/* bir özelliğin son 'win' saniyedeki eğimi (en küçük kareler) */
+function slope(key, win){
+  const b = ENG.buf, t1 = ENG.lastT; let n = 0, st = 0, sv = 0, stt = 0, stv = 0;
+  for(let i = b.length - 1; i >= 0 && t1 - b[i].t <= win; i--){
+    const v = b[i][key]; if(v == null) continue;
+    const t = b[i].t - t1; n++; st += t; sv += v; stt += t*t; stv += t*v;
+  }
+  if(n < 2) return 0;
+  const d = n*stt - st*st; return d ? (n*stv - st*sv)/d : 0;
+}
+function windowMean(key, win){
+  const b = ENG.buf, t1 = ENG.lastT; let n = 0, s = 0;
+  for(let i = b.length - 1; i >= 0 && t1 - b[i].t <= win; i--){ const v = b[i][key]; if(v == null) continue; s += v; n++; }
+  return n ? s/n : 0;
+}
+/* ardışık değerlerin toplam değişimi / süre (alternatif bacak ya da kol hareketi enerjisi) */
+function windowEnergy(key, win){
+  const b = ENG.buf, t1 = ENG.lastT; let s = 0, prev = null, t0 = null, tl = null;
+  for(let i = b.length - 1; i >= 0 && t1 - b[i].t <= win; i--){
+    const v = b[i][key]; if(v == null) continue;
+    if(prev !== null) s += Math.abs(v - prev);
+    prev = v; if(tl === null) tl = b[i].t; t0 = b[i].t;
+  }
+  return tl !== null && tl > t0 ? s/(tl - t0) : 0;
+}
+
+function engineUpdate(l, t){
+  ENG.fpsN++; if(t - ENG.fpsT >= 1){ ENG.fps = ENG.fpsN/(t - ENG.fpsT); ENG.fpsN = 0; ENG.fpsT = t; }
+  if(REC.on && (phase === 'play' || phase === 'count')) REC.push(l, t);
+  if(!l){
+    if(sOn) ENG.lostT = t;
+    sOn = false; ENG.ok = false; ENG.prevS = null;
+    if(t - ENG.lostT > .5){ for(let i = 0; i < 33; i++){ FX[i].x = null; FY[i].x = null; } }
+    return;
+  }
+  const dtv = ENG.lastT ? clamp(t - ENG.lastT, .005, .2) : .033;
+  ENG.lastT = t;
+  asp = (video.videoWidth || 640)/(video.videoHeight || 480);
+  for(let i = 0; i < 33; i++){
+    const p = l[i], s = S[i], v = p.visibility ?? 1;
+    s.x = FX[i].f((1 - p.x)*asp, t); s.y = FY[i].f(p.y, t);
+    s.v = v > s.v ? v : Math.max(v, s.v - dtv*1.5);   // hızlı yüksel, yavaş düş: görünürlük titremesin
+  }
+  sOn = true;
+  const vis = i => S[i].v > .5;
+  ENG.ok = vis(11) && vis(12);
+  if(!ENG.ok){ ENG.prevS = null; return; }
+
+  /* ---- katman 2: özellikler ---- */
+  const sw = Math.hypot(S[11].x - S[12].x, S[11].y - S[12].y);
+  const sy = (S[11].y + S[12].y)/2;
+  const hipOK = vis(23) && vis(24), hy = hipOK ? (S[23].y + S[24].y)/2 : null;
+  const Bnow = hipOK ? Math.hypot((S[11].x + S[12].x - S[23].x - S[24].x)/2, sy - hy) : sw*1.3;
+  ENG.B = ENG.B === null ? Bnow : ENG.B + (Bnow - ENG.B)*.05;
+  const B = ENG.B;
+  let m = 0, k = 0;
+  if(ENG.prevS) for(const i of MOT) if(vis(i)){ m += Math.hypot(S[i].x - ENG.prevS[i].x, S[i].y - ENG.prevS[i].y); k++; }
+  ENG.prevS = S.map(s => ({x:s.x, y:s.y}));
+  const f = {t, sy, hy, sw,
+    kd:vis(25) && vis(26) ? (S[25].y - S[26].y)/B : null,
+    wd:vis(15) && vis(16) ? (S[15].y - S[16].y)/B : null,
+    wy:vis(15) && vis(16) ? ((S[15].y + S[16].y)/2 - sy)/B : null,
+    m:k ? m/k/dtv/sw : 0};
+  ENG.buf.push(f);
+  while(ENG.buf.length && t - ENG.buf[0].t > 1.5) ENG.buf.shift();
+
+  /* ---- taban (normal duruş) ---- */
+  if(ENG.base === null){ ENG.base = sy; ENG.sw0 = sw; }
+  ENG.vy = slope('sy', .12)/B;                       // B/sn, eksi = yukarı
+  const vh = hipOK ? slope('hy', .12)/B : ENG.vy;
+  ENG.dy = (sy - ENG.base)/B;
+  ENG.scaleOK = Math.abs(sw/ENG.sw0 - 1) < .15;
+  const calm = Math.abs(ENG.vy) < .35 && ENG.st === 'ground' && !ENG.duck;
+  if(ENG.calib){ ENG.base += (sy - ENG.base)*Math.min(1, dtv*5); ENG.sw0 += (sw - ENG.sw0)*Math.min(1, dtv*5); }
+  else if(calm && Math.abs(ENG.dy) < .15){ ENG.base += (sy - ENG.base)*Math.min(1, dtv*1.2); ENG.sw0 += (sw - ENG.sw0)*Math.min(1, dtv*1.2); }
+  else if(calm && !ENG.scaleOK){ ENG.base = sy; ENG.sw0 = sw; }  // kameraya yaklaştı/uzaklaştı: yeni duruşu kabul et
+
+  /* ---- koşu: iki dizin (yoksa iki bileğin) birbirine göre inip kalkması; zıplamada ikisi birlikte hareket eder ---- */
+  const e = f.kd !== null ? windowEnergy('kd', .8) : windowEnergy('wd', .8);
+  ENG.run += (clamp((e - .5)/2, 0, 1) - ENG.run)*Math.min(1, dtv*4);
+
+  /* ---- hareket miktarı (donma için): son 0,3 sn ortalaması ---- */
+  ENG.motion = windowMean('m', .3);
+  // gürültü tabanı: geri sayımda kıpırdansa bile yükselmesin diye aşağı hızlı, yukarı çok yavaş izlenir
+  if(ENG.calib) ENG.noise = clamp(ENG.motion < ENG.noise ? ENG.noise + (ENG.motion - ENG.noise)*Math.min(1, dtv*3) : ENG.noise + (ENG.motion - ENG.noise)*Math.min(1, dtv*.15), .03, .5);
+
+  /* ---- zıplama durum makinesi ---- */
+  const running = ENG.run > .3, rk = running ? 1.4 : 1;
+  if(ENG.st === 'ground'){
+    if(t > ENG.cool && t - ENG.duckEnd > .35 && !ENG.duck && ENG.scaleOK &&
+       ENG.dy < -ENG.jumpThr*.7*rk && ENG.vy < -.6*rk && vh < -.4*rk){
+      ENG.st = 'air'; ENG.t0 = t; ENG.peak = ENG.dy; ENG.emit('jump');
+    }
+  } else {
+    ENG.peak = Math.min(ENG.peak, ENG.dy);
+    const dur = t - ENG.t0;
+    if(dur > .12 && ENG.dy > ENG.peak*.35 && ENG.vy > -.2){
+      ENG.st = 'ground'; ENG.cool = t + .25;
+      const h = -ENG.peak;
+      if(dur < .9 && h > ENG.jumpThr){
+        ENG.emit('jumpOk', {h:+h.toFixed(2), dur:+dur.toFixed(2)});
+        ENG.jumps.push(h); if(ENG.jumps.length > 6) ENG.jumps.shift();
+        if(ENG.jumps.length >= 3) ENG.jumpThr = clamp(median(ENG.jumps)*.4, .07, .18);
+      } else ENG.emit('jumpCancel');
+    } else if(dur > 1 || !ENG.scaleOK){ ENG.st = 'ground'; ENG.cool = t + .25; ENG.base = sy; ENG.emit('jumpCancel'); }
+  }
+
+  /* ---- çömelme (histerezisli) ---- */
+  if(ENG.st === 'ground'){
+    if(!ENG.duck && ENG.dy > .35 && ENG.scaleOK){ ENG.duck = true; ENG.emit('duck'); }
+    else if(ENG.duck && ENG.dy < .2){ ENG.duck = false; ENG.duckEnd = t; ENG.emit('duckEnd'); }
+  }
+
+  /* ---- kanat çırpma: bilekler omuz üstündeyken hızla aşağı ---- */
+  if(f.wy !== null){
+    if(f.wy < -.15){ if(!ENG.flapArmed) ENG.flapT = t; ENG.flapArmed = true; }
+    else if(ENG.flapArmed && f.wy > .35 && slope('wy', .15) > 1.2){ ENG.flapArmed = false; ENG.emit('flap'); }
+  }
+
+  /* ---- kol açıları ---- */
+  sig.L = S[11].x < S[12].x ? [11,13,15] : [12,14,16];
+  sig.R = sig.L[0] === 11 ? [12,14,16] : [11,13,15];
+  sig.armsOK = S[sig.L[2]].v > .4 && S[sig.R[2]].v > .4;
+  sig.aL = ang(S[sig.L[0]], S[sig.L[2]]); sig.aR = ang(S[sig.R[0]], S[sig.R[2]]);
+  sig.sw = sw;
+}
+
+/* ================= OYUNLARIN GÖRDÜĞÜ SİNYALLER ================= */
+const sig = {ok:false, sw:.3, calib:false, jump:false, jumpOk:false, duck:false, run:0, flap:false,
+  motion:0, noise:.15, aL:0, aR:0, armsOK:false, L:[11,13,15], R:[12,14,16]};
+const freezeThr = () => Math.max(FREEZE_BAD, ENG.noise*3);
 const keys = {};
 let kJump = false;
 addEventListener('keydown', e => {
   if(['Space','ArrowUp','ArrowDown','ArrowRight'].includes(e.code) && phase !== 'menu') e.preventDefault();
   if(!keys[e.code] && (e.code === 'Space' || e.code === 'ArrowUp')) kJump = true;
+  if(e.code === 'KeyD' && !keys.KeyD){ DEV.debug = !DEV.debug; saveDev(); devLabels(); }
   keys[e.code] = true;
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
@@ -215,49 +402,69 @@ cv.addEventListener('pointermove', e => { ptr.x = e.clientX; ptr.y = e.clientY; 
 cv.addEventListener('pointerup', e => { if(e.pointerType !== 'mouse') ptr.on = false; });
 cv.addEventListener('pointerleave', () => { ptr.on = false; });
 
-function signals(dt){
-  sig.jump = false; sig.flap = false;
-  sig.ok = ok(11) && ok(12);
-  if(sig.ok){
-    const sw = Math.hypot(S[11].x - S[12].x, S[11].y - S[12].y);
-    sig.sw += (sw - sig.sw)*Math.min(1, dt*2);
-    const smy = (S[11].y + S[12].y)/2;
-    if(sig.base === null) sig.base = smy;
-    else if(sig.calib) sig.base += (smy - sig.base)*Math.min(1, dt*4);
-    sig.dy = (smy - sig.base)/sig.sw;
-    if(!sig.calib && Math.abs(sig.dy) < .12) sig.base += (smy - sig.base)*Math.min(1, dt*.8);
-    // zıpla (omuzlar aniden yükselir) / çömel (omuzlar aşağıda)
-    if(sig.armed && sig.dy < -.28){ sig.jump = true; sig.armed = false; }
-    if(sig.dy > -.1) sig.armed = true;
-    sig.duck = sig.dy > .45;
-    // yerinde koşu: dizler (görünmüyorsa bilekler) ne kadar inip kalkıyor
-    const idx = ok(25) && ok(26) ? [25,26] : [15,16];
-    let e = 0, n = 0;
-    for(const i of idx) if(ok(i, .4)){ e += Math.abs(S[i].y - P[i].y)/dt; n++; }
-    e = n ? e/n/sig.sw*2 : 0;
-    sig.runE += (e - sig.runE)*Math.min(1, dt*3);
-    sig.run = Math.max(0, Math.min(1, (sig.runE - 1)/4));
-    // kanat çırpma: bilekler omuz üstünden aşağı iner
-    if(ok(15, .4) && ok(16, .4)){
-      const ay = ((S[15].y + S[16].y)/2 - smy)/sig.sw;
-      if(ay < 0) sig.flapArmed = true;
-      else if(sig.flapArmed && ay > .5){ sig.flap = true; sig.flapArmed = false; }
-    }
-    // genel hareket miktarı (omuz genişliği / saniye)
-    let m = 0, k = 0;
-    for(const i of MOT) if(ok(i)){ m += Math.hypot(S[i].x - P[i].x, S[i].y - P[i].y); k++; }
-    const mr = k ? m/k/dt/sig.sw : 0;
-    sig.motion += (mr - sig.motion)*Math.min(1, dt*5);
-    // kol açıları (ekranın solundaki ve sağındaki kol)
-    sig.L = S[11].x < S[12].x ? [11,13,15] : [12,14,16];
-    sig.R = sig.L[0] === 11 ? [12,14,16] : [11,13,15];
-    sig.armsOK = ok(sig.L[2], .4) && ok(sig.R[2], .4);
-    sig.aL = ang(S[sig.L[0]], S[sig.L[2]]); sig.aR = ang(S[sig.R[0]], S[sig.R[2]]);
-  } else { sig.runE *= .9; sig.run = 0; sig.motion = 0; sig.duck = false; sig.armsOK = false; }
-  for(let i = 0; i < 33; i++){ P[i].x = S[i].x; P[i].y = S[i].y; }
-  if(kJump){ sig.jump = true; sig.flap = true; kJump = false; }
+/* her ekran karesinde: motorun biriktirdiği olayları oyunlara aktar */
+function signals(){
+  const P = ENG.pending;
+  sig.jump = P.includes('jump'); sig.jumpOk = P.includes('jumpOk'); sig.flap = P.includes('flap');
+  P.length = 0;
+  sig.ok = ENG.ok && sOn;
+  ENG.calib = sig.calib;
+  sig.duck = sig.ok && ENG.duck;
+  sig.run = sig.ok ? ENG.run : 0;
+  sig.motion = sig.ok ? ENG.motion : 0;
+  sig.noise = ENG.noise;
+  if(!sig.ok) sig.armsOK = false;
+  if(kJump){ sig.jump = true; sig.jumpOk = true; sig.flap = true; kJump = false; }
   if(keys.ArrowDown) sig.duck = true;
   if(keys.ArrowRight) sig.run = 1;
+}
+
+/* ================= KAYIT MODU (sadece iskelet sayıları, görüntü yok) ================= */
+const REC = {
+  on:false, t0:0, frames:[], events:[], game:'',
+  start(game){ this.on = DEV.rec; this.t0 = performance.now()/1000; this.frames = []; this.events = []; this.game = game; },
+  push(l, t){
+    if(this.frames.length > 30*200) return;
+    const row = [+(t - this.t0).toFixed(3), ENG.persons];
+    if(l) for(const p of l) row.push(+p.x.toFixed(4), +p.y.toFixed(4), +(p.visibility ?? 1).toFixed(2));
+    this.frames.push(row);
+  },
+  stop(){ this.on = false; },
+  json(){ return JSON.stringify({v:1, game:this.game, model:loadedModel, delegate:ENG.delegate, asp:+asp.toFixed(4),
+    ua:navigator.userAgent, date:new Date().toISOString(), format:'[t, kişiSayısı, x0,y0,v0, ... x32,y32,v32]', frames:this.frames, events:this.events}); },
+  download(){
+    const blob = new Blob([this.json()], {type:'application/json'}), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `kayit-${this.game}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+};
+
+/* ================= HATA AYIKLAMA EKRANI ================= */
+function drawDebug(){
+  if(!DEV.debug) return;
+  const w = Math.min(400, W - 24), h = 272, x = 12, y = H - h - 12;
+  ctx.fillStyle = 'rgba(10,16,32,.78)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
+  ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
+  const L = [
+    `Model ${loadedModel || '-'} (${ENG.delegate}) · çıkarım ${ENG.fps.toFixed(0)} fps · kişi ${ENG.persons}${REC.on ? ' · KAYIT ' + REC.frames.length : ''}`,
+    `Durum ${ENG.st === 'air' ? 'HAVADA' : 'yerde'}${ENG.duck ? ' · ÇÖMELDİ' : ''} · dy ${ENG.dy.toFixed(2)} · vy ${ENG.vy.toFixed(2)} · ölçek ${ENG.scaleOK ? 'ok' : 'DEĞİŞTİ'}`,
+    `Koşu ${ENG.run.toFixed(2)} · hareket ${ENG.motion.toFixed(2)} (donma eşiği ${freezeThr().toFixed(2)}) · gürültü ${ENG.noise.toFixed(2)}`,
+    `Zıplama eşiği ${ENG.jumpThr.toFixed(2)}B · son yükseklikler ${ENG.jumps.map(j => j.toFixed(2)).join(' ') || '-'}`
+  ];
+  L.forEach((s, i) => ctx.fillText(s, x + 10, y + 8 + i*18, w - 20));
+  const gx = x + 10, gy = y + 86, gw = w - 20, gh = 90, sc = gh/1.6, zero = gy + gh*.45;
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1; ctx.strokeRect(gx, gy, gw, gh);
+  const hl = (v, c) => { ctx.strokeStyle = c; ctx.beginPath(); ctx.moveTo(gx, zero + v*sc); ctx.lineTo(gx + gw, zero + v*sc); ctx.stroke(); };
+  hl(0, 'rgba(255,255,255,.4)'); hl(-ENG.jumpThr, '#3ddc84'); hl(.35, '#ffb627');
+  const b = ENG.buf, t1 = ENG.lastT;
+  if(b.length > 1 && ENG.base !== null && ENG.B){
+    ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 2; ctx.beginPath();
+    b.forEach((f, i) => { const px = gx + gw*(1 - (t1 - f.t)/1.5), py = clamp(zero + (f.sy - ENG.base)/ENG.B*sc, gy, gy + gh); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.fillText('omuz yüksekliği (son 1,5 sn) · yeşil: zıplama · turuncu: çömelme', gx, gy + gh + 4, gw);
+  ctx.fillStyle = '#ffd23f';
+  ENG.log.slice(-4).reverse().forEach((ev, i) => ctx.fillText(`${(t1 - ev.t).toFixed(1)} sn önce: ${ev.name}${ev.data ? ' ' + JSON.stringify(ev.data) : ''}`, gx, gy + gh + 24 + i*16, gw));
 }
 
 /* ================= ORTAK EFEKTLER ================= */
@@ -597,7 +804,7 @@ const dance = {
       if(sig.motion > DANCE_OK){ this.goodT += dt; if(this.goodT >= 1.5){ this.goodT = 0; score++; SND.coin(); float(W/2, H*.22, '+1'); } }
       if(this.t <= 0){ this.st = 'freeze'; this.t = 3.5; this.bad = 0; this.fail = false; music.stop(); sfx(800, 200, .4, 'square', .1); }
     } else {
-      if(3.5 - this.t > .8 && sig.motion > FREEZE_BAD) this.bad += dt;
+      if(3.5 - this.t > .8 && sig.motion > freezeThr()) this.bad += dt;
       if(this.bad > .35 && !this.fail){ this.fail = true; SND.hit(); float(W/2, H*.3, 'Kıpırdadın!'); }
       if(this.t <= 0){
         if(!this.fail){ score += 3; SND.good(); burst(W/2, H*.4, '#9fe7ff', 30); float(W/2, H*.3, '+3 Süper heykel!'); }
@@ -629,7 +836,7 @@ const dance = {
     }
     const mh = H*.5, mx = 24, my = H*.25, lv = Math.min(1, sig.motion/3);
     rrect(mx, my, 24, mh, 12, 'rgba(255,255,255,.35)');
-    rrect(mx, my + mh*(1 - lv), 24, mh*lv, 12, frz ? (sig.motion > FREEZE_BAD ? '#ff4f7a' : '#3ddc84') : '#ffd23f');
+    rrect(mx, my + mh*(1 - lv), 24, mh*lv, 12, frz ? (sig.motion > freezeThr() ? '#ff4f7a' : '#3ddc84') : '#ffd23f');
     if(phase === 'play') outlined(frz ? 'DON!' : 'DANS ET!', W/2, H*.12 + 40, Math.min(72, W*.09), frz ? '#7fd3ff' : '#ffd23f');
   }
 };
@@ -734,7 +941,7 @@ const lion = {
       }
       else if(this.st === 'look'){
         this.lookT += dt;
-        if(this.lookT > .5 && (sig.motion > FREEZE_BAD || keys.ArrowRight)) this.bad += dt;
+        if(this.lookT > .5 && (sig.motion > freezeThr() || keys.ArrowRight)) this.bad += dt;
         if(!this.caughtLook && this.bad > .35) this.caught();
         if(this.pending && this.lookT >= this.pending.at){
           const c = this.pending.c; this.pending = null; c.out = true; c.wig = .6; c.p = Math.min(1, c.p + .01);
@@ -1201,7 +1408,7 @@ function framing(){
 let last = performance.now();
 function loop(){
   const now = performance.now(), dt = Math.min(.05, (now - last)/1000), t = now/1000; last = now;
-  detect(); smooth(); signals(dt);
+  detect(); signals();
   if(phase === 'count'){ countT -= dt; if(countT <= 0){ phase = 'play'; sig.calib = false; } }
   if(phase === 'play'){ timeLeft -= dt; if(timeLeft <= 0){ timeLeft = 0; endGame(); } }
   if(cur && phase !== 'menu') cur.update(dt);
@@ -1210,10 +1417,12 @@ function loop(){
   else { sky('#5ec8ff', '#d4f3ff'); clouds(t); }
   drawFx();
   if(phase === 'count' || phase === 'play') drawPreview();
+  if(phase !== 'menu') drawDebug();
   if(phase === 'count'){
     const n = Math.ceil(countT), f = countT % 1;
     outlined(String(n), W/2, H*.45, Math.round(Math.min(W, H)*.28*(1 + f*.3)), '#ffd23f');
     outlined(cur.hint, W/2, H*.45 + Math.min(W, H)*.22, Math.min(40, W*.055), '#fff');
+    outlined('Dik dur, seni tanıyorum…', W/2, H*.45 + Math.min(W, H)*.22 + Math.min(44, W*.06), Math.min(26, W*.04), '#ffd23f');
   }
   $('score').textContent = cur && cur.hud && phase !== 'menu' ? cur.hud() : 'Puan: ' + score;
   $('time').textContent = Math.ceil(timeLeft);
@@ -1225,23 +1434,25 @@ requestAnimationFrame(loop);
 function newRound(key){
   curKey = key; cur = GAMES[key];
   score = 0; timeLeft = cur.round || ROUND; parts = []; texts = [];
-  sig.base = null; sig.calib = true;
+  ENG.reset(); sig.calib = true; REC.start(key);
   cur.reset();
   phase = 'count'; countT = 3;
   $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
 }
 function endGame(){
-  phase = 'end'; music.stop();
+  phase = 'end'; music.stop(); REC.stop();
+  $('recBox').hidden = !REC.frames.length;
+  if(REC.frames.length) $('recInfo').textContent = `${REC.frames.length} kare, ${REC.events.length} olay`;
   $('hud').hidden = true; $('over').hidden = false;
   $('result').textContent = cur.result ? cur.result() : `${cur.title}: ${score} puan!`;
   $('again').focus();
 }
-function toMenu(){ phase = 'menu'; music.stop(); $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; }
+function toMenu(){ phase = 'menu'; music.stop(); REC.stop(); $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; }
 async function start(key){
   const btns = document.querySelectorAll('.game'); btns.forEach(b => b.disabled = true);
   try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
   if(!camOK){ try { await initCam(); } catch(e){ note2 = 'Kamera açılamadı, klavyeyle oynayabilirsin'; } }
-  if(camOK && !landmarker){
+  if(camOK && (!landmarker || loadedModel !== DEV.model)){
     try { await initPose(); }
     catch(e){ camOK = false; note2 = 'Hareket algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; }
   }
@@ -1263,6 +1474,16 @@ $('bback').addEventListener('click', () => { $('bopts').hidden = true; $('menu')
 $('again').addEventListener('click', () => newRound(curKey));
 $('back').addEventListener('click', toMenu);
 $('toMenu').addEventListener('click', toMenu);
+$('recDl').addEventListener('click', () => REC.download());
+function devLabels(){
+  $('devDebug').textContent = 'Hata ayıklama: ' + (DEV.debug ? 'Açık' : 'Kapalı'); $('devDebug').setAttribute('aria-pressed', DEV.debug);
+  $('devRec').textContent = 'Hareket kaydı: ' + (DEV.rec ? 'Açık' : 'Kapalı'); $('devRec').setAttribute('aria-pressed', DEV.rec);
+  $('devModel').textContent = 'Model: ' + (DEV.model === 'full' ? 'Full (hassas)' : 'Lite (hızlı)'); $('devModel').setAttribute('aria-pressed', DEV.model === 'full');
+}
+$('devDebug').addEventListener('click', () => { DEV.debug = !DEV.debug; saveDev(); devLabels(); });
+$('devRec').addEventListener('click', () => { DEV.rec = !DEV.rec; saveDev(); devLabels(); });
+$('devModel').addEventListener('click', () => { DEV.model = DEV.model === 'full' ? 'lite' : 'full'; saveDev(); devLabels(); });
+devLabels();
 }
 </script>
 </body>
