@@ -61,6 +61,8 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
       <button class="game" data-game="wall"><i class="dot" style="background:#e86a4a"></i><div><b>Şekil Duvarı</b><span>Duvardaki şekli kollarınla yap, delikten geç.</span></div></button>
       <button class="game" data-game="bird"><i class="dot" style="background:#4da3ff"></i><div><b>Kuş Uçuşu</b><span>Kollarını kanat gibi çırp, kuleler arasından uç.</span></div></button>
       <button class="game" data-game="lion"><i class="dot" style="background:#e8a33d"></i><div><b>Aslan Bakıyor</b><span>Aslan arkasını dönünce yerinde koşarak yaklaş, bakınca don. Kıpırdayan elenir!</span></div></button>
+      <button class="game" data-game="keeper"><i class="dot" style="background:#43a047"></i><div><b>Kaleci</b><span>Sana gelen şutları ellerinle ya da vücudunla kurtar.</span></div></button>
+      <button class="game" data-game="fruit"><i class="dot" style="background:#e63946"></i><div><b>Meyve Kılıcı</b><span>Elindeki kılıcı hızla savur, havaya fırlayan meyveleri kes.</span></div></button>
       <button class="game" data-game="dance"><i class="dot" style="background:#ffb627"></i><div><b>Donma Dansı</b><span>Müzik çalınca dans et, müzik durunca heykel gibi don.</span></div></button>
     </div>
     <p class="note">Görüntü cihazdan çıkmaz, her şey tarayıcıda işlenir. Kamera yoksa klavyeyle denenebilir: Boşluk zıpla/çırp, ↓ çömel, → koş; balonlar fareyle de patlar.</p>
@@ -950,9 +952,227 @@ const balloon = {
   }
 };
 
+/* ================= OYUN 8: KALECİ (kalecinin gözünden) ================= */
+function drawBall(x, y, r, rot){
+  ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.beginPath(); ctx.ellipse(x + r*.15, y + r*.2, r, r, 0, 0, 7); ctx.fill();
+  circle(x, y, r, '#fff');
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  ctx.fillStyle = '#1b2a4a';
+  const pent = (cx, cy, s) => { ctx.beginPath(); for(let i = 0; i < 5; i++){ const a = -Math.PI/2 + i*Math.PI*2/5; ctx.lineTo(cx + Math.cos(a)*s, cy + Math.sin(a)*s); } ctx.fill(); };
+  pent(0, 0, r*.32);
+  for(let i = 0; i < 5; i++){ const a = -Math.PI/2 + i*Math.PI*2/5; pent(Math.cos(a)*r*.78, Math.sin(a)*r*.78, r*.2); }
+  ctx.restore();
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(1.5, r*.05); ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+}
+function drawGlove(x, y, r){
+  circle(x, y, r, '#ff9f1c'); circle(x, y, r*.62, '#ffd23f');
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke();
+}
+const keeper = {
+  title:'Kaleci', hint:'Topu ellerinle ya da vücudunla kurtar!',
+  reset(){ this.ball = null; this.wait = 1.5; this.saves = 0; this.goals = 0; this.net = 0; this.kicker = CRITTERS[Math.random()*CRITTERS.length | 0]; this.kick = 0; },
+  hud(){ return 'Kurtarış: ' + this.saves; },
+  result(){ return `${this.saves} kurtarış yaptın, ${this.goals} gol yedin!`; },
+  body(){
+    mapQ();
+    if(!qOn || !qk(11, .3) || !qk(12, .3)) return null;
+    const sw = Math.max(40, Math.hypot(Q[11].x - Q[12].x, Q[11].y - Q[12].y));
+    const gloves = [];
+    for(const [w, i] of [[15,19],[16,20]]) if(qk(w, .35)) gloves.push(qk(i, .35) ? {x:(Q[w].x + Q[i].x)/2, y:(Q[w].y + Q[i].y)/2} : Q[w]);
+    const sm = {x:(Q[11].x + Q[12].x)/2, y:(Q[11].y + Q[12].y)/2};
+    const hm = qk(23) && qk(24) ? {x:(Q[23].x + Q[24].x)/2, y:(Q[23].y + Q[24].y)/2} : {x:sm.x, y:sm.y + sw*1.4};
+    const head = qk(0, .4) ? Q[0] : {x:sm.x, y:sm.y - sw*.6};
+    return {sw, gloves, gr:sw*.28, sm, hm, head, hr:sw*.3};
+  },
+  shoot(){
+    const prog = (ROUND - timeLeft)/ROUND;
+    this.kick = .4; sfx(160, 70, .15, 'square', .2);
+    this.ball = {st:'fly', z:0, dur:2.3 - prog*.8, sx:W/2 + (Math.random() - .5)*U, sy:H*.47,
+      tx:W*(.22 + Math.random()*.56), ty:H*(.22 + Math.random()*.55), arc:H*(.08 + Math.random()*.15), r1:U*.85, t2:0, rot:0};
+  },
+  update(dt){
+    this.net = Math.max(0, this.net - dt); this.kick = Math.max(0, this.kick - dt);
+    const b = this.ball;
+    if(!b){ if(phase === 'play'){ this.wait -= dt; if(this.wait <= 0) this.shoot(); } return; }
+    if(b.st === 'fly'){
+      b.z = Math.min(1, b.z + dt/b.dur); b.rot += dt*6;
+      const e = b.z*b.z;
+      b.x = b.sx + (b.tx - b.sx)*e; b.y = b.sy + (b.ty - b.sy)*e - Math.sin(b.z*Math.PI)*b.arc; b.r = U*.12 + (b.r1 - U*.12)*e;
+      if(b.z >= 1){
+        let saved = false;
+        const p = this.body();
+        if(p){
+          for(const g of p.gloves) if(Math.hypot(g.x - b.x, g.y - b.y) < b.r + p.gr) saved = true;
+          if(Math.hypot(p.head.x - b.x, p.head.y - b.y) < b.r + p.hr) saved = true;
+          if(segDist(b.x, b.y, p.sm.x, p.sm.y, p.hm.x, p.hm.y) < b.r + p.sw*.45) saved = true;
+          for(const [s, e2, w] of [[11,13,15],[12,14,16]]){
+            if(qk(e2, .3) && segDist(b.x, b.y, Q[s].x, Q[s].y, Q[e2].x, Q[e2].y) < b.r + p.sw*.15) saved = true;
+            if(qk(e2, .3) && qk(w, .3) && segDist(b.x, b.y, Q[e2].x, Q[e2].y, Q[w].x, Q[w].y) < b.r + p.sw*.15) saved = true;
+          }
+        }
+        if(ptr.on && Math.hypot(ptr.x - b.x, ptr.y - b.y) < b.r + U*.5) saved = true;
+        if(saved){ this.saves++; b.st = 'saved'; b.vx = (b.x < W/2 ? -1 : 1)*W*.9; b.vy = -H*.8; SND.good(); burst(b.x, b.y, '#fff', 20); float(b.x, b.y - b.r*1.5, 'Kurtardın!'); }
+        else { this.goals++; b.st = 'goal'; this.net = .9; SND.hit(); float(W/2, H*.3, 'Gol!'); }
+        score = this.saves;
+      }
+    } else {
+      b.t2 += dt;
+      if(b.st === 'saved'){ b.x += b.vx*dt; b.y += b.vy*dt; b.vy += H*2*dt; b.rot += dt*10; }
+      else { b.r += dt*b.r1*1.5; }
+      if(b.t2 > .9){ this.ball = null; this.wait = .7 + Math.random()*.9; if(Math.random() < .3) this.kicker = CRITTERS[Math.random()*CRITTERS.length | 0]; }
+    }
+  },
+  draw(t){
+    sky('#6cc6ff', '#c9ecff');
+    ctx.fillStyle = '#5a6b8c';
+    for(let i = 0; i < 40; i++){ const x = i*W/39; ctx.beginPath(); ctx.arc(x, H*.36, W/60, Math.PI, 0); ctx.fill(); }
+    ctx.fillStyle = '#7d8fb3'; ctx.fillRect(0, H*.36, W, H*.04);
+    const hz = H*.4;
+    for(let i = 0; i < 8; i++){ const y0 = hz + (H - hz)*(i/8)**1.6, y1 = hz + (H - hz)*((i + 1)/8)**1.6; ctx.fillStyle = i % 2 ? '#4caf50' : '#43a047'; ctx.fillRect(0, y0, W, y1 - y0); }
+    ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(W*.38, hz + 6); ctx.lineTo(W*.62, hz + 6); ctx.lineTo(W*.95, H); ctx.moveTo(W*.38, hz + 6); ctx.lineTo(W*.05, H); ctx.stroke();
+    circle(W/2, H*.5, 4, '#fff');
+    drawCritter({...this.kicker, out:false, walk:this.kick*12, wig:this.kick}, W/2 + U*.7, H*.49, U*.75, t, this.kick > 0);
+    const b = this.ball;
+    if(b && b.st === 'fly'){ ctx.globalAlpha = .25 + .35*b.z; ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.setLineDash([8, 8]); ctx.beginPath(); ctx.arc(b.tx, b.ty, b.r1, 0, 7); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
+    if(b && b.st === 'goal') drawBall(b.x, b.y, b.r, b.rot);
+    const p = this.body();
+    if(p){
+      ctx.globalAlpha = .55; ctx.lineCap = 'round';
+      bLimb(p.sm, p.hm, p.sw*.6, '#4d6bff');
+      for(const [s, e, w] of [[11,13,15],[12,14,16]]) if(qk(e, .3)){ bLimb(Q[s], Q[e], p.sw*.25, '#4d6bff'); if(qk(w, .3)) bLimb(Q[e], Q[w], p.sw*.22, '#4d6bff'); }
+      circle(p.head.x, p.head.y, p.hr, '#ffcf9e');
+      ctx.globalAlpha = 1;
+      for(const g of p.gloves) drawGlove(g.x, g.y, p.gr);
+    }
+    if(b && b.st !== 'goal') drawBall(b.x, b.y, b.r, b.rot);
+    rrect(0, 0, W*.035, H, 0, '#fff'); rrect(W*.965, 0, W*.035, H, 0, '#fff'); rrect(0, 0, W, H*.05, 0, '#fff');
+    if(this.net > 0){
+      ctx.globalAlpha = this.net*.6; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      for(let x = 0; x < W; x += 30){ ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + Math.sin(t*30)*6, H); ctx.stroke(); }
+      for(let y = 0; y < H; y += 30){ ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y + Math.sin(t*30)*6); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+    }
+    outlined(`Gol: ${this.goals}`, W*.14, H*.14 + 50, Math.min(30, W*.04), '#fff');
+  }
+};
+
+/* ================= OYUN 9: MEYVE KILICI ================= */
+const FRUITS = [
+  {c:'#2e9c5c', i:'#ff4f6d', r:1.25, stripe:true}, {c:'#ff9f1c', i:'#ffd08a', r:.9}, {c:'#e63946', i:'#fff3d6', r:.85},
+  {c:'#ffd23f', i:'#fff7c2', r:.8}, {c:'#7b2cbf', i:'#e0aaff', r:.7}
+];
+function drawFruit(f){
+  ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.rot);
+  if(f.half){
+    ctx.beginPath(); ctx.arc(0, 0, f.r, 0, Math.PI); ctx.closePath(); ctx.fillStyle = f.t.c; ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, 0, f.r*.9, f.r*.16, 0, 0, 7); ctx.fillStyle = f.t.i; ctx.fill();
+  } else {
+    circle(0, 0, f.r, f.t.c);
+    if(f.t.stripe){ ctx.strokeStyle = '#1f6b3e'; ctx.lineWidth = f.r*.12; for(const k of [-.5, 0, .5]){ ctx.beginPath(); ctx.ellipse(k*f.r, 0, f.r*.18, f.r*.95, 0, 0, 7); ctx.stroke(); } }
+    circle(-f.r*.35, -f.r*.35, f.r*.2, 'rgba(255,255,255,.35)');
+    rrect(-f.r*.05, -f.r*1.15, f.r*.1, f.r*.3, 2, '#6d4527');
+    ell(f.r*.18, -f.r*1.05, f.r*.2, f.r*.09, '#3ddc84', -.4);
+  }
+  ctx.restore();
+}
+function drawSword(s){
+  const dx = s.tx - s.bx, dy = s.ty - s.by, L = Math.hypot(dx, dy) || 1, ux = dx/L, uy = dy/L, nx = -uy, ny = ux, gw = Math.max(14, L*.12);
+  ctx.lineCap = 'round';
+  bLimb({x:s.bx - ux*gw*.9, y:s.by - uy*gw*.9}, {x:s.bx, y:s.by}, 12, '#6d4527');
+  ctx.fillStyle = '#e8eef5'; ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(s.bx + nx*7, s.by + ny*7); ctx.lineTo(s.tx - ux*18 + nx*7, s.ty - uy*18 + ny*7); ctx.lineTo(s.tx, s.ty);
+  ctx.lineTo(s.tx - ux*18 - nx*7, s.ty - uy*18 - ny*7); ctx.lineTo(s.bx - nx*7, s.by - ny*7); ctx.closePath(); ctx.fill(); ctx.stroke();
+  bLimb({x:s.bx + ux*4, y:s.by + uy*4}, {x:s.tx - ux*24, y:s.ty - uy*24}, 2, '#b7c4d4');
+  bLimb({x:s.bx + nx*gw, y:s.by + ny*gw}, {x:s.bx - nx*gw, y:s.by - ny*gw}, 8, '#ffd23f');
+}
+const fruit = {
+  title:'Meyve Kılıcı', hint:'Kılıcını hızlı savur, meyveleri kes!',
+  reset(){ this.list = []; this.halves = []; this.spawn = 1; this.trails = {L:[], R:[], P:[]}; this.combo = 0; this.lastCut = 0; this.sws = []; },
+  swords(){
+    mapQ();
+    const out = [];
+    if(qOn && qk(11, .3) && qk(12, .3)){
+      const sw = Math.max(40, Math.hypot(Q[11].x - Q[12].x, Q[11].y - Q[12].y));
+      for(const [key, w, i, e] of [['L',15,19,13],['R',16,20,14]]){
+        if(!qk(w, .35)) continue;
+        const Wr = Q[w]; let dx = 0, dy = -1;
+        if(qk(e, .3)){ dx = Wr.x - Q[e].x; dy = Wr.y - Q[e].y; } else if(qk(i, .35)){ dx = Q[i].x - Wr.x; dy = Q[i].y - Wr.y; }
+        const d = Math.hypot(dx, dy) || 1;
+        out.push({key, bx:Wr.x, by:Wr.y, tx:Wr.x + dx/d*sw*1.3, ty:Wr.y + dy/d*sw*1.3});
+      }
+    }
+    if(ptr.on) out.push({key:'P', bx:ptr.x, by:ptr.y + 70, tx:ptr.x, ty:ptr.y});
+    return out;
+  },
+  cutFruit(f, ang, now){
+    f.cut = true;
+    for(const s of [-1, 1]) this.halves.push({x:f.x, y:f.y, vx:f.vx + Math.cos(ang + s*Math.PI/2)*160, vy:Math.min(f.vy, 0)*.3 - 80, rot:ang + (s > 0 ? 0 : Math.PI), spin:s*4, r:f.r, t:f.t, half:true, life:1.6});
+    burst(f.x, f.y, f.t.i, 14);
+    this.combo = now - this.lastCut < .45 ? this.combo + 1 : 1; this.lastCut = now;
+    score += 1;
+    if(this.combo === 3){ score += 2; float(f.x, f.y - f.r*1.6, 'Kombo +2!'); SND.good(); } else float(f.x, f.y - f.r*1.4, '+1');
+    sfx(900, 250, .12, 'sawtooth', .08);
+  },
+  update(dt){
+    const now = performance.now()/1000, g = H*1.1;
+    this.sws = this.swords();
+    for(const k of ['L', 'R', 'P']){
+      const s = this.sws.find(x => x.key === k), tr = this.trails[k];
+      if(s){ const l = tr[tr.length - 1]; if(!l || l.x !== s.tx || l.y !== s.ty) tr.push({x:s.tx, y:s.ty, mx:(s.bx + s.tx)/2, my:(s.by + s.ty)/2, t:now}); }
+      else tr.length = 0;
+      while(tr.length && now - tr[0].t > .25) tr.shift();
+    }
+    if(phase === 'play'){
+      this.spawn -= dt;
+      if(this.spawn <= 0){
+        const prog = (ROUND - timeLeft)/ROUND, n = 1 + (Math.random() < .3 + prog*.3 ? 1 : 0) + (prog > .6 && Math.random() < .2 ? 1 : 0);
+        for(let k = 0; k < n; k++){
+          const t = FRUITS[Math.random()*FRUITS.length | 0], x = W*(.2 + Math.random()*.6);
+          this.list.push({x, y:H + U, vx:(W/2 - x)*(.3 + Math.random()*.4), vy:-H*(1.1 + Math.random()*.25), r:U*.55*t.r, t, rot:Math.random()*6, spin:(Math.random() - .5)*4});
+        }
+        this.spawn = 1.4 - prog*.5 + Math.random()*.4;
+      }
+    }
+    for(const f of [...this.list, ...this.halves]){ f.vy += g*dt; f.x += f.vx*dt; f.y += f.vy*dt; f.rot += f.spin*dt; if(f.half) f.life -= dt; }
+    const minSp = Math.max(300, W*.35);
+    if(phase === 'play') for(const k in this.trails){
+      const tr = this.trails[k]; if(tr.length < 2) continue;
+      const b = tr[tr.length - 1]; let a = tr[0];
+      for(let j = tr.length - 2; j >= 0; j--){ a = tr[j]; if(b.t - a.t >= .06) break; }
+      if(b.t - a.t < .01) continue;
+      const sp = Math.hypot(b.x - a.x, b.y - a.y)/(b.t - a.t);
+      if(sp < minSp) continue;
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      for(const f of this.list) if(!f.cut && (segDist(f.x, f.y, a.x, a.y, b.x, b.y) < f.r || segDist(f.x, f.y, a.mx, a.my, b.mx, b.my) < f.r)) this.cutFruit(f, ang, now);
+    }
+    this.list = this.list.filter(f => !f.cut && !(f.vy > 0 && f.y > H + f.r*2));
+    this.halves = this.halves.filter(f => f.life > 0 && f.y < H + f.r*3);
+  },
+  draw(t){
+    sky('#d8a25e', '#8a5a2b');
+    ctx.strokeStyle = 'rgba(0,0,0,.12)'; ctx.lineWidth = 3;
+    for(let x = 0; x < W; x += Math.max(60, W/14)){ ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for(const [x, c] of [[W*.12, '#ff4f7a'], [W*.88, '#ffb627']]){
+      bLimb({x, y:0}, {x, y:H*.1}, 2, '#1b2a4a'); ell(x, H*.17, U*.45, U*.6, c); rrect(x - U*.25, H*.17 - U*.66, U*.5, U*.1, 3, '#1b2a4a'); rrect(x - U*.25, H*.17 + U*.56, U*.5, U*.1, 3, '#1b2a4a');
+    }
+    for(const f of this.halves){ ctx.globalAlpha = Math.min(1, f.life); drawFruit(f); }
+    ctx.globalAlpha = 1;
+    for(const f of this.list) drawFruit(f);
+    for(const k in this.trails){
+      const tr = this.trails[k];
+      for(let j = 1; j < tr.length; j++){ ctx.globalAlpha = j/tr.length*.7; bLimb(tr[j - 1], tr[j], 4 + j/tr.length*10, '#fff'); }
+    }
+    ctx.globalAlpha = 1;
+    for(const s of this.sws) drawSword(s);
+  }
+};
+
 /* ================= ÇERÇEVE ================= */
-const GAMES = {balloon, dino, plat, wall, bird, dance, lion};
+const GAMES = {balloon, dino, plat, wall, bird, dance, lion, keeper, fruit};
 const NEED = {
+  keeper: () => !sig.armsOK ? 'Kolların görünsün, biraz geri git' : '',
+  fruit: () => !(ok(15, .35) || ok(16, .35)) ? 'Ellerini kaldır, kılıcını göster!' : '',
   balloon: () => bopt.ctrl === 'head' ? (!ok(0, .4) ? 'Yüzün kameraya dönük olsun' : '') : (!ok(19, .35) && !ok(20, .35) ? 'Ellerini kaldır, parmağını göster!' : ''),
   wall: () => !sig.armsOK ? 'Kolların görünsün, biraz geri git' : '',
   bird: () => !(ok(15, .4) && ok(16, .4)) ? 'Kolların görünsün, biraz geri git' : '',
