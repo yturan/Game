@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orman Rallisi</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+/* Orman Rallisi — iki elle hayali direksiyon
+   Direksiyon: iki elin merkezlerini birleştiren çizginin açısı (sürekli ölçüm)
+   Gaz: iki başparmak yukarı (like) · Geri: iki başparmak aşağı (dislike) · Fren: yumruk
+   Karar: başparmak açık mı + elin hangi yüzü kamerada + direksiyona göre başparmak yönü + modelin el işareti */
+:root{--ink:#1b2a4a;--accent:#ff4f7a;--sun:#ffd23f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#72d7ee;font-family:'Baloo 2',system-ui,sans-serif;color:var(--ink)}
+canvas#game{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+.hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
+.hud[hidden],.msg[hidden],.screen[hidden]{display:none}
+.pill{background:#fff;border-radius:999px;padding:4px 18px;font-size:clamp(18px,2.6vw,30px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:8px 18px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
+.msg{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 22px;border-radius:16px;font-size:clamp(18px,2.6vw,28px);font-weight:700;text-align:center;max-width:92vw}
+.screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(27,42,74,.4);padding:16px;overflow:auto}
+.card{background:#fff;border-radius:28px;padding:clamp(18px,3.5vw,36px);max-width:640px;width:100%;text-align:center;box-shadow:0 10px 0 rgba(0,0,0,.15)}
+h1{margin:0 0 4px;font-size:clamp(36px,6vw,58px);line-height:1.05;color:var(--accent)}
+p{margin:6px 0 12px;font-size:18px}
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0;text-align:left}
+.rule{border:3px solid #e3edf7;border-radius:16px;padding:10px 12px;background:#f6fbff}
+.rule b{display:block;font-size:20px}
+.rule span{font-size:15px}
+.go{border:0;border-radius:999px;background:var(--accent);color:#fff;font:inherit;font-size:24px;font-weight:800;padding:8px 36px;margin:6px;cursor:pointer;box-shadow:0 6px 0 #c42a52;min-height:44px}
+.go.alt{background:#4d6bff;box-shadow:0 6px 0 #2f47c2}
+.go:active{transform:translateY(4px);box-shadow:none}
+.go:disabled{opacity:.6;cursor:wait}
+.dev{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}
+.chip{border:2px solid #e3edf7;border-radius:999px;background:#f6fbff;color:var(--ink);font:inherit;font-size:15px;font-weight:700;padding:6px 14px;min-height:44px;cursor:pointer}
+.chip[aria-pressed=true]{border-color:#4d6bff;background:#eef1ff}
+.note{font-size:14px;opacity:.75;margin:10px 0 0}
+.note a{color:var(--ink)}
+#recBox[hidden]{display:none}
+button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<video id="cam" playsinline muted></video>
+
+<div class="hud" id="hud" hidden>
+  <div class="pill" id="hudL">Altın: 0</div>
+  <button id="toMenu" type="button">Menü</button>
+  <div class="pill" id="hudR">90</div>
+</div>
+<div class="msg" id="msg" hidden></div>
+
+<div class="screen" id="menu">
+  <div class="card">
+    <h1>Orman Rallisi</h1>
+    <p>Hayali bir direksiyonu iki elinle tut: sol elin 9'da, sağ elin 3'te. Kameraya 1–1,5 metre uzaklıkta otur ya da dur.</p>
+    <div class="rules">
+      <div class="rule"><b>Direksiyon</b><span>Ellerini direksiyon gibi çevir</span></div>
+      <div class="rule"><b>Gaz</b><span>İki başparmak yukarı</span></div>
+      <div class="rule"><b>Geri</b><span>Bileklerini çevir, iki başparmak aşağı</span></div>
+      <div class="rule"><b>Fren</b><span>Yumruk yap, başparmaklar içeride</span></div>
+    </div>
+    <button class="go" id="race">Yarışa başla</button>
+    <button class="go alt" id="calib">Kalibrasyon</button>
+    <p class="note" id="calibNote"></p>
+    <div class="dev">
+      <button class="chip" id="devPanel"></button><button class="chip" id="devRec"></button>
+    </div>
+    <p class="note">Görüntü cihazdan çıkmaz. Kamera yoksa klavye: ← → direksiyon, ↑ gaz, ↓ geri, boşluk fren. <a href="oyunlar.html">Diğer oyunlar</a></p>
+  </div>
+</div>
+
+<div class="screen" id="over" hidden>
+  <div class="card">
+    <h1>Yarış bitti!</h1>
+    <p id="result"></p>
+    <button class="go" id="again">Tekrar yarış</button>
+    <button class="go alt" id="back">Menü</button>
+    <div id="recBox" hidden>
+      <p class="note">El kaydı hazır (<span id="recInfo"></span>). Sadece el noktaları var, görüntü yok.</p>
+      <button class="go alt" id="recDl">Kaydı indir</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import {FilesetResolver, GestureRecognizer} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+{
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const GMODEL = "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task";
+const ROUND = 90;
+const $ = id => document.getElementById(id);
+const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
+let W = 0, H = 0;
+function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W*d; cv.height = H*d; ctx.setTransform(d,0,0,d,0,0); }
+addEventListener('resize', resize); resize();
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const median = a => { if(!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+const DEV = {panel:false, rec:false};
+try { Object.assign(DEV, JSON.parse(localStorage.getItem('yarisDev') || '{}')); } catch(e){}
+const saveDev = () => { try { localStorage.setItem('yarisDev', JSON.stringify(DEV)); } catch(e){} };
+
+/* ================= SES ================= */
+let ac = null, engOsc = null, engGain = null;
+function sfx(f1, f2, dur, type = 'triangle', vol = .2){
+  if(!ac) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur + .02);
+}
+function engineSound(speedPct, on){
+  if(!ac) return;
+  if(!engOsc){ engOsc = ac.createOscillator(); engGain = ac.createGain(); engOsc.type = 'sawtooth'; engGain.gain.value = 0; const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 600; engOsc.connect(lp).connect(engGain).connect(ac.destination); engOsc.start(); }
+  engOsc.frequency.setTargetAtTime(55 + Math.abs(speedPct)*110, ac.currentTime, .05);
+  engGain.gain.setTargetAtTime(on ? .035 + Math.abs(speedPct)*.04 : 0, ac.currentTime, .1);
+}
+
+/* ================= KAMERA + MODEL ================= */
+let rec = null, camOK = false, lastVT = -1, asp = 16/9, note2 = '', delegate = '-';
+async function initCam(){
+  const s = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, facingMode:'user'}, audio:false});
+  video.srcObject = s; await video.play(); camOK = true;
+}
+async function initModel(){
+  const fs = await FilesetResolver.forVisionTasks(WASM);
+  const opts = d => ({baseOptions:{modelAssetPath:GMODEL, delegate:d}, runningMode:'VIDEO', numHands:2,
+    minHandDetectionConfidence:.5, minHandPresenceConfidence:.5, minTrackingConfidence:.5});
+  try { rec = await GestureRecognizer.createFromOptions(fs, opts('GPU')); delegate = 'GPU'; }
+  catch(e){ rec = await GestureRecognizer.createFromOptions(fs, opts('CPU')); delegate = 'CPU'; }
+}
+
+/* ================= EL KONTROL KATMANI ================= */
+class OneEuro {
+  constructor(minC = 1.0, beta = 15, dC = 1){ this.minC = minC; this.beta = beta; this.dC = dC; this.x = null; this.dx = 0; this.t = 0; }
+  a(c, dt){ const r = 2*Math.PI*c*dt; return r/(r + 1); }
+  f(x, t){
+    if(this.x === null){ this.x = x; this.t = t; return x; }
+    const dt = Math.max(1e-3, t - this.t); this.t = t;
+    this.dx += ((x - this.x)/dt - this.dx)*this.a(this.dC, dt);
+    this.x += (x - this.x)*this.a(this.minC + this.beta*Math.abs(this.dx), dt);
+    return this.x;
+  }
+}
+const sub = (a, b) => ({x:a.x - b.x, y:a.y - b.y, z:(a.z || 0) - (b.z || 0)});
+const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
+const cross = (a, b) => ({x:a.y*b.z - a.z*b.y, y:a.z*b.x - a.x*b.z, z:a.x*b.y - a.y*b.x});
+
+/* Kalibrasyon: her el için yumruk / gaz / geri pozlarındaki özelliklerin ortancası */
+let CAL = null;
+try { CAL = JSON.parse(localStorage.getItem('yarisCalib') || 'null'); } catch(e){}
+const DEF = {extMid:.92, extGap:.08};
+function calParams(side){
+  const c = CAL && CAL[side];
+  if(!c || !c.fist || !c.gaz || !c.geri) return {extMid:DEF.extMid, extGap:DEF.extGap, face:null};
+  const thumbsOut = Math.min(c.gaz.ext, c.geri.ext);
+  const extMid = (c.fist.ext + thumbsOut)/2, extGap = Math.max(.03, (thumbsOut - c.fist.ext)*.15);
+  const face = [];
+  for(const k of ['nz', 'f2']){ const sep = (c.gaz[k] - c.geri[k])/2; if(Math.abs(sep) > .1) face.push({k, mid:(c.gaz[k] + c.geri[k])/2, sep}); }
+  return {extMid, extGap, face:face.length ? face : null};
+}
+
+/* Bir elin özellikleri. lm: görüntü noktaları (aynalanmış, en-boy düzeltilmiş), wl: dünya noktaları (metre) */
+function handFeatures(lm, wl, side, wheel){
+  const s = d3(wl[0], wl[9]) || 1e-3;
+  const ext = d3(wl[4], wl[1])/s;                                   // başparmak ucu ile başparmak kökü arası: açık başparmakta uzun, yumrukta kısa
+  const touch = Math.min(...[6, 7, 10, 11].map(k => d3(wl[4], wl[k])))/s; // başparmak ucu kıvrık parmaklara değiyor mu
+  let curl = 0; for(const t of [8, 12, 16, 20]) curl += d3(wl[t], wl[0])/(d3(wl[t - 3], wl[0]) || 1e-3); curl /= 4;
+  const n = cross(sub(wl[5], wl[0]), sub(wl[17], wl[0])), nl = Math.hypot(n.x, n.y, n.z) || 1e-3;
+  const a2 = sub(lm[5], lm[0]), b2 = sub(lm[17], lm[0]);
+  const f2 = (a2.x*b2.y - a2.y*b2.x)/((Math.hypot(a2.x, a2.y)*Math.hypot(b2.x, b2.y)) || 1e-3);
+  const v = sub(lm[4], lm[2]), vl = Math.hypot(v.x, v.y) || 1e-3, c = Math.cos(wheel), sn = Math.sin(wheel);
+  const dirY = (-v.x*sn + v.y*c)/vl;                                 // direksiyonun kendi "yukarı"sına göre: -1 yukarı, +1 aşağı
+  return {ext, touch, curl, nz:n.z/nl, f2, dirY};
+}
+function handVote(h, side, prevOut){
+  const P = calParams(side);
+  let out = prevOut ? h.ext > P.extMid - P.extGap : h.ext > P.extMid + P.extGap;
+  if((h.g === 'Closed_Fist' && h.gs > .8 && h.ext < P.extMid + P.extGap*2) || h.touch < .18) out = false;
+  h.out = out; h.extMid = P.extMid;
+  if(!out){ h.vote = 'fren'; h.s = 0; return; }
+  let face = 0;
+  if(P.face){ for(const f of P.face) face += clamp((h[f.k] - f.mid)/f.sep, -1, 1); face /= P.face.length; }
+  const dir = clamp(-h.dirY*1.5, -1, 1);
+  const model = h.g === 'Thumb_Up' ? h.gs : h.g === 'Thumb_Down' ? -h.gs : 0;
+  h.face = face; h.dir = dir; h.model = model;
+  h.s = P.face ? .4*face + .35*dir + .25*model : .55*dir + .45*model;
+  h.vote = h.s > .25 ? 'gaz' : h.s < -.25 ? 'geri' : 'belirsiz';
+}
+
+const CTL = {
+  hands:{L:null, R:null}, seenT:{L:-9, R:-9}, out:{L:false, R:false},
+  fL:{x:new OneEuro(), y:new OneEuro()}, fR:{x:new OneEuro(), y:new OneEuro()},
+  wheel:0, steer:0, state:'yok', cand:'yok', pendT:0, lastT:0, fps:0, fpsN:0, fpsT:0, count:0, log:[]
+};
+function setState(s, t){ CTL.state = s; CTL.log.push({t, s}); if(CTL.log.length > 6) CTL.log.shift(); if(REC.on) REC.events.push([+(t - REC.t0).toFixed(3), s]); }
+
+function processHands(res, t){
+  CTL.fpsN++; if(t - CTL.fpsT >= 1){ CTL.fps = CTL.fpsN/(t - CTL.fpsT); CTL.fpsN = 0; CTL.fpsT = t; }
+  const dt = CTL.lastT ? clamp(t - CTL.lastT, .005, .2) : .033; CTL.lastT = t;
+  asp = (video.videoWidth || 1280)/(video.videoHeight || 720);
+  const L = res.landmarks || [], WL = res.worldLandmarks || [], G = res.gestures || [];
+  const found = L.map((l, i) => {
+    const lm = l.map(p => ({x:(1 - p.x)*asp, y:p.y, z:p.z}));
+    const pc = [0, 5, 9, 13, 17].reduce((a, k) => ({x:a.x + lm[k].x/5, y:a.y + lm[k].y/5}), {x:0, y:0});
+    return {lm, wl:WL[i] || l, pc, g:(G[i] && G[i][0] && G[i][0].categoryName) || 'None', gs:(G[i] && G[i][0] && G[i][0].score) || 0};
+  });
+  if(REC.on) REC.push(res, t);
+  // eller etikete göre değil ekrandaki konuma göre: soldaki L, sağdaki R
+  found.sort((a, b) => a.pc.x - b.pc.x);
+  let assign = {};
+  if(found.length >= 2){ assign.L = found[0]; assign.R = found[found.length - 1]; }
+  else if(found.length === 1){
+    const h = found[0], other = h.pc.x < asp/2 ? 'L' : 'R';
+    const pL = CTL.hands.L, pR = CTL.hands.R;
+    if(pL && pR) assign[Math.hypot(h.pc.x - pL.pc.x, h.pc.y - pL.pc.y) < Math.hypot(h.pc.x - pR.pc.x, h.pc.y - pR.pc.y) ? 'L' : 'R'] = h;
+    else assign[other] = h;
+  }
+  for(const side of ['L', 'R']){
+    const h = assign[side];
+    if(h){
+      const f = side === 'L' ? CTL.fL : CTL.fR;
+      h.pc = {x:f.x.f(h.pc.x, t), y:f.y.f(h.pc.y, t)};
+      CTL.hands[side] = h; CTL.seenT[side] = t;
+    } else if(t - CTL.seenT[side] > .35){ CTL.hands[side] = null; const f = side === 'L' ? CTL.fL : CTL.fR; f.x.x = null; f.y.x = null; }
+  }
+  const hL = CTL.hands.L, hR = CTL.hands.R;
+  // direksiyon açısı (sürekli)
+  if(hL && hR){
+    CTL.wheel = Math.atan2(hR.pc.y - hL.pc.y, hR.pc.x - hL.pc.x);
+    let deg = CTL.wheel*180/Math.PI;
+    deg = Math.sign(deg)*Math.max(0, Math.abs(deg) - 5);
+    CTL.steer = Math.sign(deg)*Math.pow(clamp(Math.abs(deg)/60, 0, 1), 1.2);
+  } else CTL.steer *= .85;
+  for(const side of ['L', 'R']){
+    const h = CTL.hands[side];
+    if(!h) continue;
+    if(!h.f || h.ft !== t){ Object.assign(h, handFeatures(h.lm, h.wl, side, CTL.wheel)); h.ft = t; handVote(h, side, CTL.out[side]); CTL.out[side] = h.out; }
+  }
+  if(phase === 'calib') calibSample(hL, hR, dt);
+  // iki elin ortak kararı + kilit + bekleme
+  let cand;
+  if(!hL || !hR) cand = 'yok';
+  else if(hL.vote === 'fren' || hR.vote === 'fren') cand = 'fren';
+  else if(hL.vote === 'gaz' && hR.vote === 'gaz') cand = 'gaz';
+  else if(hL.vote === 'geri' && hR.vote === 'geri') cand = 'geri';
+  else cand = CTL.state === 'gaz' || CTL.state === 'geri' ? CTL.state : 'boşta';
+  if(cand !== CTL.state){
+    if(cand !== CTL.cand){ CTL.cand = cand; CTL.pendT = 0; }
+    CTL.pendT += dt;
+    const need = cand === 'geri' ? .4 : cand === 'yok' ? .3 : .15;
+    if(CTL.pendT >= need) setState(cand, t);
+  } else { CTL.cand = cand; CTL.pendT = 0; }
+}
+function detect(){
+  if(!rec || !camOK || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const ts = performance.now();
+  processHands(rec.recognizeForVideo(video, ts), ts/1000);
+}
+
+/* ================= KALİBRASYON ================= */
+const CSTEPS = [
+  {k:'grip', t:'Ellerini direksiyonu tutar gibi kaldır', s:'Sol el 9\'da, sağ el 3\'te', d:1},
+  {k:'fist', t:'Yumruk yap', s:'Başparmaklar içeride: FREN', d:1.6},
+  {k:'gaz',  t:'İki başparmak yukarı', s:'Like işareti: GAZ', d:1.6},
+  {k:'geri', t:'Bileklerini çevir, başparmaklar aşağı', s:'Dislike işareti: GERİ', d:1.6}
+];
+const CB = {step:0, prog:0, samples:null, done:false, report:[]};
+function calibStart(){ CB.step = 0; CB.prog = 0; CB.done = false; CB.report = []; CB.samples = {L:{}, R:{}}; CB.newCal = {L:{}, R:{}}; }
+function calibSample(hL, hR, dt){
+  if(CB.done) return;
+  const st = CSTEPS[CB.step];
+  if(!hL || !hR){ CB.prog = Math.max(0, CB.prog - dt); return; }
+  CB.prog += dt;
+  if(st.k !== 'grip' && CB.prog > .5){
+    for(const [side, h] of [['L', hL], ['R', hR]]){
+      const S = CB.samples[side][st.k] ||= {ext:[], nz:[], f2:[]};
+      S.ext.push(h.ext); S.nz.push(h.nz); S.f2.push(h.f2);
+    }
+  }
+  if(CB.prog >= st.d){
+    if(st.k !== 'grip') for(const side of ['L', 'R']){ const S = CB.samples[side][st.k]; CB.newCal[side][st.k] = {ext:median(S.ext), nz:median(S.nz), f2:median(S.f2)}; }
+    sfx(660, 990, .15); CB.step++; CB.prog = 0;
+    if(CB.step >= CSTEPS.length) calibFinish();
+  }
+}
+function calibFinish(){
+  CB.done = true;
+  const rep = [];
+  let good = true;
+  for(const side of ['L', 'R']){
+    const c = CB.newCal[side], name = side === 'L' ? 'Sol el' : 'Sağ el';
+    const gap = Math.min(c.gaz.ext, c.geri.ext) - c.fist.ext;
+    const face = Math.max(Math.abs(c.gaz.nz - c.geri.nz), Math.abs(c.gaz.f2 - c.geri.f2));
+    rep.push(`${name}: başparmak farkı ${gap > .15 ? 'iyi' : gap > .07 ? 'yeterli' : 'zayıf'} (${gap.toFixed(2)}), el yüzü farkı ${face > .5 ? 'iyi' : face > .2 ? 'yeterli' : 'zayıf'} (${face.toFixed(2)})`);
+    if(gap < .07) good = false;
+  }
+  CB.report = rep;
+  if(good){ CAL = CB.newCal; try { localStorage.setItem('yarisCalib', JSON.stringify(CAL)); } catch(e){} CB.report.push('Kalibrasyon kaydedildi.'); }
+  else CB.report.push('Yumruk ile başparmak farkı az. Kaydedilmedi, varsayılan ayarlar kullanılacak. Tekrar dene.');
+  calibNoteUpdate();
+}
+
+/* ================= KAYIT ================= */
+const REC = {
+  on:false, t0:0, frames:[], events:[],
+  start(){ this.on = DEV.rec; this.t0 = performance.now()/1000; this.frames = []; this.events = []; },
+  push(res, t){
+    if(this.frames.length > 30*120) return;
+    const r = (v, k) => +v.toFixed(k);
+    const hands = (res.landmarks || []).map((l, i) => ({
+      lm:l.flatMap(p => [r(p.x, 4), r(p.y, 4), r(p.z, 4)]),
+      wl:(res.worldLandmarks && res.worldLandmarks[i] || []).flatMap(p => [r(p.x, 4), r(p.y, 4), r(p.z, 4)]),
+      g:res.gestures && res.gestures[i] && res.gestures[i][0] ? [res.gestures[i][0].categoryName, r(res.gestures[i][0].score, 2)] : null,
+      hd:(res.handedness || res.handednesses || [])[i]?.[0]?.categoryName || null
+    }));
+    this.frames.push([r(t - this.t0, 3), hands]);
+  },
+  stop(){ this.on = false; },
+  download(){
+    const blob = new Blob([JSON.stringify({v:1, game:'yaris', delegate, asp:+asp.toFixed(4), cal:CAL, ua:navigator.userAgent, date:new Date().toISOString(), frames:this.frames, events:this.events})], {type:'application/json'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kayit-yaris-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+};
+
+/* ================= KLAVYE ================= */
+const keys = {};
+addEventListener('keydown', e => { if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code) && phase !== 'menu') e.preventDefault(); keys[e.code] = true; if(e.code === 'KeyD'){ DEV.panel = !DEV.panel; saveDev(); devLabels(); } });
+addEventListener('keyup', e => { keys[e.code] = false; });
+function controls(){
+  let steer = CTL.steer, state = CTL.state;
+  const kb = keys.ArrowLeft || keys.ArrowRight || keys.ArrowUp || keys.ArrowDown || keys.Space;
+  if(kb){
+    steer = (keys.ArrowRight ? 1 : 0) - (keys.ArrowLeft ? 1 : 0);
+    state = keys.Space ? 'fren' : keys.ArrowUp ? 'gaz' : keys.ArrowDown ? 'geri' : 'boşta';
+  }
+  return {steer, state};
+}
+
+/* ================= YOL (yalancı 3D) ================= */
+const SEG = 200, RW = 2000, DRAW = 160, CAMH = 1000, CAMD = 1/Math.tan(50*Math.PI/180), MAXS = SEG*55;
+const PLZ = CAMH*CAMD, CENT = .12;
+const CRIT = [
+  {n:'Kedi', c:'#ffa94d', d:'#d9771f', ear:'tri'}, {n:'Köpek', c:'#c8915a', d:'#8d5a2b', ear:'flop'},
+  {n:'Maymun', c:'#9c6b43', d:'#e8c39e', ear:'round'}, {n:'Ayı', c:'#7a5230', d:'#4e3219', ear:'round'},
+  {n:'Penguen', c:'#2d3142', d:'#ffffff', ear:'none'}
+];
+const KCOL = ['#4da3ff', '#3ddc84', '#b46cff', '#ffb627', '#ff7b39'];
+let segs = [], trackLen = 0;
+function buildTrack(){
+  segs = [];
+  const add = curve => { const i = segs.length; segs.push({i, curve, p1:{w:{z:i*SEG}, c:{}, s:{}}, p2:{w:{z:(i + 1)*SEG}, c:{}, s:{}}, sp:[], alt:Math.floor(i/3) % 2}); };
+  const ease = (a, b, p) => a + (b - a)*((-Math.cos(p*Math.PI)/2) + .5);
+  const road = (enter, hold, leave, curve) => { for(let i = 0; i < enter; i++) add(ease(0, curve, i/enter)); for(let i = 0; i < hold; i++) add(curve); for(let i = 0; i < leave; i++) add(ease(curve, 0, i/leave)); };
+  road(0, 60, 0, 0);
+  let seed = 7; const rnd = () => (seed = (seed*16807) % 2147483647)/2147483647;
+  while(segs.length < 1600){
+    const kind = rnd();
+    if(kind < .3) road(0, 30 + rnd()*40 | 0, 0, 0);
+    else if(kind < .8){ const c = (rnd() < .5 ? -1 : 1)*(1.5 + rnd()*2.5); road(20, 25 + rnd()*40 | 0, 20, c); }
+    else { const c = 2 + rnd()*1.5; road(15, 20, 15, c); road(15, 20, 15, -c); }
+  }
+  road(0, 40, 0, 0);
+  trackLen = segs.length*SEG;
+  for(let i = 70; i < segs.length - 20; i++){
+    if(i % 9 === 0) segs[i].sp.push({k:'tree', x:-(1.4 + rnd()*1.4)}), segs[i].sp.push({k:'tree', x:1.4 + rnd()*1.4});
+    if(i % 23 === 0) segs[i].sp.push({k:'bush', x:(rnd() < .5 ? -1 : 1)*(1.2 + rnd()*.4)});
+  }
+  for(let i = 90; i < segs.length - 30; i += 40 + (rnd()*30 | 0)){
+    const x = [-.6, 0, .6][rnd()*3 | 0];
+    if(rnd() < .65) for(let k = 0; k < 5; k++) segs[i + k*3].sp.push({k:'coin', x});
+    else segs[i].sp.push({k:'cone', x});
+  }
+}
+function project(p, camX, camY, camZ){
+  p.c.x = -camX; p.c.y = -camY; p.c.z = p.w.z - camZ;
+  p.s.scale = CAMD/p.c.z;
+  p.s.x = W/2 + p.s.scale*p.c.x*W/2; p.s.y = H/2 - p.s.scale*p.c.y*H/2; p.s.w = p.s.scale*RW*W/2;
+}
+const findSeg = z => segs[Math.floor(z/SEG) % segs.length];
+
+/* ================= OYUN DURUMU ================= */
+let phase = 'menu', timeLeft = ROUND, countT = 0;
+const G = {d:0, x:0, speed:0, coins:0, karts:[], bump:0, steerVis:0, hit:0};
+function raceReset(){
+  G.d = 0; G.x = 0; G.speed = 0; G.coins = 0; G.bump = 0; G.hit = 0; G.steerVis = 0;
+  for(const s of segs) s.sp = s.sp.filter(o => o.k !== 'coin' && o.k !== 'cone' && o.k !== 'kart');
+  buildTrack();
+  G.karts = CRIT.map((c, i) => ({c, col:KCOL[i], d:SEG*(30 + i*45), x:[-.5, .5, 0, -.5, .5][i], sp:MAXS*(.42 + i*.07), lane:[-.5, .5, 0, -.5, .5][i]}));
+}
+function place(){ let p = 1; for(const k of G.karts) if(k.d > G.d) p++; return p; }
+function update(dt){
+  const {steer, state} = controls();
+  const racing = phase === 'race';
+  const pct = G.speed/MAXS;
+  if(racing){
+    if(state === 'gaz') G.speed += (G.speed < 0 ? MAXS*1.2 : MAXS/3.2)*dt;
+    else if(state === 'geri') G.speed -= (G.speed > 0 ? MAXS*1.1 : MAXS/5)*dt;
+    else if(state === 'fren') G.speed -= Math.sign(G.speed)*Math.min(Math.abs(G.speed), MAXS*1.1*dt);
+    else G.speed -= Math.sign(G.speed)*Math.min(Math.abs(G.speed), MAXS/7*dt);
+    G.speed = clamp(G.speed, -MAXS*.25, MAXS);
+    G.x += steer*dt*(.5 + 1.5*Math.abs(pct))*Math.sign(G.speed || 1);
+    const seg = findSeg(G.d + PLZ);
+    G.x -= dt*2*pct*pct*seg.curve*CENT;
+    if(Math.abs(G.x) > 1 && Math.abs(G.speed) > MAXS*.3) G.speed -= Math.sign(G.speed)*MAXS*1.3*dt;
+    G.x = clamp(G.x, -2.2, 2.2);
+    G.d = Math.max(0, G.d + G.speed*dt);
+    for(const o of seg.sp){
+      if(o.got) continue;
+      if(o.k === 'coin' && Math.abs(o.x - G.x) < .3){ o.got = true; G.coins++; sfx(900, 1500, .12, 'square', .1); }
+      if(o.k === 'cone' && Math.abs(o.x - G.x) < .35 && G.hit <= 0){ o.got = true; G.speed *= .35; G.hit = .8; G.bump = .4; sfx(220, 90, .3, 'sawtooth', .12); }
+    }
+  }
+  for(const k of G.karts){
+    const ks = findSeg(k.d);
+    k.x += (k.lane - k.x)*Math.min(1, dt*2) - dt*ks.curve*.02;
+    if(racing) k.d += k.sp*dt;
+    const rel = k.d - G.d;
+    if(racing && Math.abs(rel) < SEG*1.2 && Math.abs(k.x - G.x) < .45 && G.hit <= 0 && G.speed > k.sp){ G.speed = k.sp*.7; G.hit = .6; G.bump = .3; sfx(180, 120, .25, 'square', .12); }
+  }
+  G.hit = Math.max(0, G.hit - dt); G.bump = Math.max(0, G.bump - dt);
+  G.steerVis += (steer - G.steerVis)*Math.min(1, dt*8);
+  engineSound(pct, racing);
+}
+
+/* ================= ÇİZİM ================= */
+function circle(x, y, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+function rrect(x, y, w, h, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+function poly(pts, c){ ctx.fillStyle = c; ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.fill(); }
+function outlined(t, x, y, size, fill){
+  ctx.font = `800 ${size}px "Baloo 2",sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size/7); ctx.strokeStyle = '#1b2a4a'; ctx.strokeText(t, x, y);
+  ctx.fillStyle = fill; ctx.fillText(t, x, y);
+}
+function animalHead(cr, x, y, r){
+  if(cr.ear === 'tri') for(const s of [-1, 1]) poly([[x + s*r*.9, y - r*.2], [x + s*r*.7, y - r*1.2], [x + s*r*.15, y - r*.8]], cr.c);
+  if(cr.ear === 'round') for(const s of [-1, 1]) circle(x + s*r*.8, y - r*.7, r*.35, cr.c);
+  circle(x, y, r, cr.c);
+  if(cr.ear === 'flop') for(const s of [-1, 1]){ ctx.fillStyle = cr.d; ctx.beginPath(); ctx.ellipse(x + s*r*.95, y + r*.1, r*.25, r*.55, s*.3, 0, 7); ctx.fill(); }
+  if(cr.n === 'Penguen'){ circle(x - r*.35, y, r*.4, '#fff'); circle(x + r*.35, y, r*.4, '#fff'); }
+  if(cr.n === 'Maymun'){ ctx.fillStyle = cr.d; ctx.beginPath(); ctx.ellipse(x, y + r*.15, r*.75, r*.65, 0, 0, 7); ctx.fill(); }
+  for(const s of [-1, 1]){ circle(x + s*r*.38, y - r*.08, r*.17, '#fff'); circle(x + s*r*.38, y - r*.05, r*.09, '#1b2a4a'); }
+}
+function drawKart(x, y, w, col, cr, tilt){
+  ctx.save(); ctx.translate(x, y); ctx.rotate(tilt || 0);
+  const h = w*.45;
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, 0, w*.55, h*.18, 0, 0, 7); ctx.fill();
+  rrect(-w*.5, -h*.45, w*.22, h*.45, w*.04, '#1b2a4a'); rrect(w*.28, -h*.45, w*.22, h*.45, w*.04, '#1b2a4a');
+  rrect(-w*.42, -h*.9, w*.84, h*.55, w*.1, col);
+  rrect(-w*.3, -h*.8, w*.6, h*.12, w*.05, 'rgba(255,255,255,.35)');
+  if(cr) animalHead(cr, 0, -h*1.25, w*.22);
+  else { circle(0, -h*1.2, w*.2, '#ffcf9e'); ctx.fillStyle = '#ff4f7a'; ctx.beginPath(); ctx.arc(0, -h*1.25, w*.21, Math.PI, 0); ctx.fill(); }
+  ctx.restore();
+}
+function drawSprite(o, x, y, sc){
+  const u = sc*W/2;
+  if(o.k === 'tree'){ const h = 1100*u; rrect(x - h*.05, y - h*.35, h*.1, h*.35, 2, '#6d4527'); circle(x, y - h*.6, h*.3, '#2f8f4e'); circle(x - h*.15, y - h*.45, h*.2, '#3ea85c'); circle(x + h*.17, y - h*.5, h*.2, '#3ea85c'); }
+  else if(o.k === 'bush'){ const h = 350*u; circle(x - h*.4, y - h*.35, h*.4, '#3ea85c'); circle(x + h*.3, y - h*.4, h*.45, '#2f8f4e'); }
+  else if(o.k === 'coin' && !o.got){ const r = 120*u; circle(x, y - r*2.2, r, '#ffc93c'); circle(x, y - r*2.2, r*.55, '#ffe58a'); }
+  else if(o.k === 'cone' && !o.got){ const h = 320*u; poly([[x - h*.4, y], [x + h*.4, y], [x, y - h]], '#ff7b39'); rrect(x - h*.22, y - h*.55, h*.44, h*.12, 2, '#fff'); }
+}
+function render(t){
+  const g = ctx.createLinearGradient(0, 0, 0, H/2); g.addColorStop(0, '#5ec8ff'); g.addColorStop(1, '#d4f3ff');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H/2 + 2);
+  const base = findSeg(G.d), pct = (G.d % SEG)/SEG, ps = findSeg(G.d + PLZ);
+  const off = (ps.i*.6 + G.x*40) % W;
+  ctx.fillStyle = '#7fbf7a';
+  for(let i = -1; i < 4; i++){ const hx = i*W*.45 - off*.5; ctx.beginPath(); ctx.ellipse(hx, H/2 + 4, W*.3, H*.12, 0, Math.PI, 0); ctx.fill(); }
+  ctx.fillStyle = '#5aa356';
+  for(let i = -1; i < 5; i++){ const hx = i*W*.33 - off; ctx.beginPath(); ctx.ellipse(hx, H/2 + 4, W*.2, H*.07, 0, Math.PI, 0); ctx.fill(); }
+  let maxy = H, x = 0, dx = -(base.curve*pct);
+  const N = segs.length, camX = G.x*RW, drawn = [];
+  for(let n = 0; n < DRAW; n++){
+    const s = segs[(base.i + n) % N], looped = s.i < base.i, cz = G.d - (looped ? trackLen : 0);
+    project(s.p1, camX - x, CAMH, cz); project(s.p2, camX - x - dx, CAMH, cz);
+    x += dx; dx += s.curve;
+    s.vis = false;
+    if(s.p1.c.z <= CAMD || s.p2.s.y >= maxy || s.p2.s.y >= s.p1.s.y) continue;
+    s.vis = true; drawn.push(s);
+    const {p1, p2} = s, y1 = p1.s.y, y2 = p2.s.y;
+    ctx.fillStyle = s.alt ? '#3fae49' : '#38a043'; ctx.fillRect(0, y2, W, y1 - y2 + 1);
+    const r1 = p1.s.w/6, r2 = p2.s.w/6;
+    poly([[p1.s.x - p1.s.w - r1, y1], [p1.s.x - p1.s.w, y1], [p2.s.x - p2.s.w, y2], [p2.s.x - p2.s.w - r2, y2]], s.alt ? '#fff' : '#e8382d');
+    poly([[p1.s.x + p1.s.w + r1, y1], [p1.s.x + p1.s.w, y1], [p2.s.x + p2.s.w, y2], [p2.s.x + p2.s.w + r2, y2]], s.alt ? '#fff' : '#e8382d');
+    poly([[p1.s.x - p1.s.w, y1], [p1.s.x + p1.s.w, y1], [p2.s.x + p2.s.w, y2], [p2.s.x - p2.s.w, y2]], s.alt ? '#74706b' : '#6e6a65');
+    if(s.alt){ const l1 = p1.s.w/32, l2 = p2.s.w/32; for(const k of [-1/3, 1/3]) poly([[p1.s.x + p1.s.w*k*2 - l1, y1], [p1.s.x + p1.s.w*k*2 + l1, y1], [p2.s.x + p2.s.w*k*2 + l2, y2], [p2.s.x + p2.s.w*k*2 - l2, y2]], '#e9e4dc'); }
+    maxy = y2;
+  }
+  for(let n = drawn.length - 1; n >= 0; n--){
+    const s = drawn[n];
+    for(const o of s.sp) drawSprite(o, s.p1.s.x + s.p1.s.scale*o.x*RW*W/2, s.p1.s.y, s.p1.s.scale);
+    for(const k of G.karts){
+      if(findSeg(k.d) !== s || k.d <= G.d + PLZ*.5) continue;
+      const kp = (k.d % SEG)/SEG, sc = s.p1.s.scale + (s.p2.s.scale - s.p1.s.scale)*kp;
+      const kx = s.p1.s.x + (s.p2.s.x - s.p1.s.x)*kp + sc*k.x*RW*W/2, ky = s.p1.s.y + (s.p2.s.y - s.p1.s.y)*kp;
+      drawKart(kx, ky, 700*sc*W/2, k.col, k.c, 0);
+    }
+  }
+  const bounce = (Math.abs(G.x) > 1 ? Math.sin(t*40)*3 : 0) + (G.bump > 0 ? Math.sin(t*60)*6 : 0);
+  if(!(G.hit > 0 && Math.floor(G.hit*10) % 2)) drawKart(W/2, H - 18 + bounce, Math.min(W*.28, 300), '#ff4f7a', null, G.steerVis*.12);
+}
+const HC = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+function drawPreview(){
+  if(!camOK || video.readyState < 2) return;
+  const pw = Math.min(220, W*.24), ph = pw/asp, px = W - pw - 12, py = 66;
+  ctx.save(); ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.clip();
+  ctx.translate(px + pw, py); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph); ctx.restore();
+  for(const side of ['L', 'R']){
+    const h = CTL.hands[side]; if(!h) continue;
+    ctx.strokeStyle = VCOL[h.vote] || '#fff'; ctx.lineWidth = 2;
+    for(const [a, b] of HC){ ctx.beginPath(); ctx.moveTo(px + h.lm[a].x/asp*pw, py + h.lm[a].y*ph); ctx.lineTo(px + h.lm[b].x/asp*pw, py + h.lm[b].y*ph); ctx.stroke(); }
+  }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.stroke();
+}
+const VCOL = {gaz:'#3ddc84', geri:'#ffb627', fren:'#ff4f7a', belirsiz:'#cfd8e3', 'boşta':'#cfd8e3', yok:'#cfd8e3'};
+const SNAME = {gaz:'GAZ', geri:'GERİ', fren:'FREN', 'boşta':'BOŞTA', yok:'ELLERİNİ GÖSTER', belirsiz:'?'};
+function drawWheel(){
+  const r = Math.min(80, W*.09), cx = r + 24, cy = H - r - 24, a = CTL.hands.L && CTL.hands.R ? CTL.wheel : G.steerVis*.9;
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(a);
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = r*.22; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
+  ctx.strokeStyle = '#3a4a6e'; ctx.lineWidth = r*.12; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = r*.16; ctx.beginPath(); ctx.moveTo(-r, 0); ctx.lineTo(r, 0); ctx.moveTo(0, 0); ctx.lineTo(0, r); ctx.stroke();
+  circle(0, 0, r*.25, '#ff4f7a');
+  for(const [side, sx] of [['L', -1], ['R', 1]]){ const h = CTL.hands[side]; circle(sx*r, 0, r*.22, h ? VCOL[h.vote] : 'rgba(255,255,255,.4)'); }
+  ctx.restore();
+  const {state} = controls();
+  outlined(SNAME[state] || state, cx, cy - r - 26, Math.min(30, W*.04), VCOL[state] || '#fff');
+}
+function drawPanel(){
+  if(!DEV.panel) return;
+  const w = Math.min(560, W - 24), h = 200, x = W - w - 12, y = H - h - 12;
+  ctx.fillStyle = 'rgba(10,16,32,.8)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
+  ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
+  ctx.fillText(`Model: el işareti (${delegate}) · çıkarım ${CTL.fps.toFixed(0)} fps · direksiyon ${(CTL.wheel*180/Math.PI).toFixed(0)}° · karar ${SNAME[CTL.state]} · kalibrasyon ${CAL ? 'var' : 'yok'}`, x + 10, y + 8, w - 20);
+  ['L', 'R'].forEach((side, i) => {
+    const h0 = CTL.hands[side], cx = x + 10 + i*(w/2), cy = y + 34;
+    ctx.fillStyle = '#ffd23f'; ctx.fillText(side === 'L' ? 'SOL EL' : 'SAĞ EL', cx, cy);
+    ctx.fillStyle = '#fff';
+    if(!h0){ ctx.fillText('görünmüyor', cx, cy + 20); return; }
+    const L = [
+      `başparmak ${h0.ext.toFixed(2)} (eşik ${h0.extMid.toFixed(2)}) ${h0.out ? 'AÇIK' : 'içeride'}`,
+      `el yüzü nz ${h0.nz.toFixed(2)} · 2D ${h0.f2.toFixed(2)} → ${h0.face !== undefined && h0.out ? h0.face.toFixed(2) : '-'}`,
+      `yön ${h0.dirY.toFixed(2)} → ${h0.out ? h0.dir.toFixed(2) : '-'}`,
+      `model ${h0.g} ${h0.gs.toFixed(2)}`,
+      `toplam ${h0.out ? h0.s.toFixed(2) : '-'} · oy ${SNAME[h0.vote]}`
+    ];
+    L.forEach((s, k) => { ctx.fillStyle = k === 4 ? (VCOL[h0.vote] || '#fff') : '#fff'; ctx.fillText(s, cx, cy + 20 + k*18, w/2 - 16); });
+  });
+  ctx.fillStyle = 'rgba(255,255,255,.7)';
+  ctx.fillText('son kararlar: ' + CTL.log.slice(-5).map(l => SNAME[l.s]).join(' → '), x + 10, y + h - 24, w - 20);
+}
+function drawCalib(){
+  ctx.fillStyle = 'rgba(27,42,74,.55)'; ctx.fillRect(0, 0, W, H);
+  if(CB.done){
+    outlined('Kalibrasyon bitti', W/2, H*.25, Math.min(48, W*.07), '#ffd23f');
+    CB.report.forEach((s, i) => outlined(s, W/2, H*.38 + i*36, Math.min(22, W*.032), '#fff'));
+    outlined('Menüye dönmek için ekrana dokun', W/2, H*.8, Math.min(24, W*.035), '#ffd23f');
+    return;
+  }
+  const st = CSTEPS[CB.step];
+  outlined(`${CB.step + 1}/${CSTEPS.length}  ${st.t}`, W/2, H*.3, Math.min(46, W*.06), '#fff');
+  outlined(st.s, W/2, H*.3 + 56, Math.min(30, W*.045), '#ffd23f');
+  const r = Math.min(70, W*.09), cx = W/2, cy = H*.6;
+  ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 14; ctx.beginPath(); ctx.arc(cx, cy, r, 0, 7); ctx.stroke();
+  ctx.strokeStyle = '#3ddc84'; ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI/2, -Math.PI/2 + Math.PI*2*clamp(CB.prog/st.d, 0, 1)); ctx.stroke();
+  const both = CTL.hands.L && CTL.hands.R;
+  outlined(both ? 'Böyle tut…' : 'İki elin de görünsün', cx, cy, Math.min(22, W*.03), both ? '#3ddc84' : '#ff8fa3');
+}
+
+/* ================= DÖNGÜ ================= */
+let last = performance.now();
+function loop(){
+  const now = performance.now(), dt = Math.min(.05, (now - last)/1000), t = now/1000; last = now;
+  detect();
+  if(phase === 'count'){ countT -= dt; if(countT <= 0){ phase = 'race'; sfx(500, 1000, .3, 'square', .15); } }
+  if(phase === 'race'){ timeLeft -= dt; if(timeLeft <= 0){ timeLeft = 0; endRace(); } }
+  if(segs.length) update(dt);
+  if(segs.length) render(t); else { ctx.fillStyle = '#72d7ee'; ctx.fillRect(0, 0, W, H); }
+  if(phase !== 'menu'){ drawPreview(); if(phase !== 'calib') drawWheel(); drawPanel(); }
+  if(phase === 'calib') drawCalib();
+  if(phase === 'count') outlined(String(Math.ceil(countT)), W/2, H*.35, Math.round(Math.min(W, H)*.25), '#ffd23f');
+  $('hudL').textContent = `Altın: ${G.coins} · Sıra: ${place()}/${G.karts.length + 1}`;
+  $('hudR').textContent = `${Math.round(Math.abs(G.speed)/MAXS*120)} km/s · ${Math.ceil(timeLeft)}`;
+  const m = framing(), el = $('msg'); el.hidden = !m; if(m) el.textContent = m;
+  requestAnimationFrame(loop);
+}
+function framing(){
+  if(phase !== 'race' && phase !== 'count') return '';
+  if(!camOK) return note2;
+  if(!rec) return 'El algılayıcı yükleniyor…';
+  if(!CTL.hands.L && !CTL.hands.R) return 'Ellerini direksiyonu tutar gibi kaldır';
+  if(!CTL.hands.L || !CTL.hands.R) return 'İki elin de görünsün';
+  return '';
+}
+buildTrack(); G.karts = []; requestAnimationFrame(loop);
+
+/* ================= MENÜ ================= */
+async function prepare(){
+  const b = [$('race'), $('calib')]; b.forEach(x => x.disabled = true);
+  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
+  if(!camOK){ try { await initCam(); } catch(e){ note2 = 'Kamera açılamadı, klavyeyle oynayabilirsin'; } }
+  if(camOK && !rec){ try { await initModel(); } catch(e){ camOK = false; note2 = 'El algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; } }
+  b.forEach(x => x.disabled = false);
+}
+async function startRace(){
+  await prepare();
+  raceReset(); REC.start();
+  timeLeft = ROUND; countT = 3; phase = 'count';
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
+}
+async function startCalib(){
+  await prepare();
+  calibStart(); phase = 'calib';
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = true;
+}
+function endRace(){
+  phase = 'end'; REC.stop(); engineSound(0, false);
+  $('hud').hidden = true; $('over').hidden = false;
+  $('result').textContent = `${place()}. oldun ve ${G.coins} altın topladın!`;
+  $('recBox').hidden = !REC.frames.length;
+  if(REC.frames.length) $('recInfo').textContent = `${REC.frames.length} kare, ${REC.events.length} karar`;
+}
+function toMenu(){ phase = 'menu'; REC.stop(); engineSound(0, false); $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; calibNoteUpdate(); }
+function calibNoteUpdate(){ $('calibNote').textContent = CAL ? 'Kalibrasyon kayıtlı. Başka bir çocuk oynayacaksa tekrar kalibre et.' : 'İlk yarıştan önce kalibrasyon yapmanı öneririm (15 saniye).'; }
+function devLabels(){
+  $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel);
+  $('devRec').textContent = 'El kaydı: ' + (DEV.rec ? 'Açık' : 'Kapalı'); $('devRec').setAttribute('aria-pressed', DEV.rec);
+}
+$('race').addEventListener('click', startRace);
+$('calib').addEventListener('click', startCalib);
+$('again').addEventListener('click', startRace);
+$('back').addEventListener('click', toMenu);
+$('toMenu').addEventListener('click', toMenu);
+$('recDl').addEventListener('click', () => REC.download());
+$('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(); devLabels(); });
+$('devRec').addEventListener('click', () => { DEV.rec = !DEV.rec; saveDev(); devLabels(); });
+cv.addEventListener('pointerdown', () => { if(phase === 'calib' && CB.done) toMenu(); });
+devLabels(); calibNoteUpdate();
+globalThis.__YARIS = {CTL, CB, G, handFeatures, handVote, processHands, calibStart, get CAL(){ return CAL; }, set phase(v){ phase = v; }, get phase(){ return phase; }, raceReset, update, startRace};
+}
+</script>
+</body>
+</html>
