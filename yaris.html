@@ -18,6 +18,7 @@ video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
 .hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
 .hud[hidden],.msg[hidden],.screen[hidden]{display:none}
 .pill{background:#fff;border-radius:999px;padding:4px 18px;font-size:clamp(18px,2.6vw,30px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud .btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 .hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:8px 18px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
 .msg{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 22px;border-radius:16px;font-size:clamp(18px,2.6vw,28px);font-weight:700;text-align:center;max-width:92vw}
 .screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(27,42,74,.4);padding:16px;overflow:auto}
@@ -47,7 +48,7 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
 
 <div class="hud" id="hud" hidden>
   <div class="pill" id="hudL">Altın: 0</div>
-  <button id="toMenu" type="button">Menü</button>
+  <div class="btns"><button id="toMenu" type="button">Menü</button><button id="camHud" type="button">Kamera</button></div>
   <div class="pill" id="hudR">90</div>
 </div>
 <div class="msg" id="msg" hidden></div>
@@ -66,7 +67,7 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
     <button class="go alt" id="calib">Kalibrasyon</button>
     <p class="note" id="calibNote"></p>
     <div class="dev">
-      <button class="chip" id="devPanel"></button><button class="chip" id="devRec"></button>
+      <button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button><button class="chip" id="devRec"></button>
     </div>
     <p class="note">Görüntü cihazdan çıkmaz. Kamera yoksa klavye: ← → direksiyon, ↑ gaz, ↓ geri, boşluk fren. <a href="oyunlar.html">Diğer oyunlar</a></p>
   </div>
@@ -121,10 +122,26 @@ function engineSound(speedPct, on){
 
 /* ================= KAMERA + MODEL ================= */
 let rec = null, camOK = false, lastVT = -1, asp = 16/9, note2 = '', delegate = '-';
+/* Kamera yönü: ön (user) / arka (environment); tercih tüm oyunlarda ortak */
+let camFacing = 'user';
+try { camFacing = localStorage.getItem('kameraYonu') || 'user'; } catch(e){}
 async function initCam(){
-  const s = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}, height:{ideal:720}, facingMode:'user'}, audio:false});
-  video.srcObject = s; await video.play(); camOK = true;
+  if(video.srcObject){ video.srcObject.getTracks().forEach(tr => tr.stop()); video.srcObject = null; }
+  const base = {width:{ideal:1280}, height:{ideal:720}};
+  let s;
+  try { s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:{exact:camFacing}}, audio:false}); }
+  catch(e){ s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:camFacing}, audio:false}); }
+  video.srcObject = s; await video.play(); camOK = true; lastVT = -1;
 }
+function camLabels(){ for(const id of ['camBtn', 'camHud']){ const b = document.getElementById(id); if(b) b.textContent = 'Kamera: ' + (camFacing === 'user' ? 'Ön' : 'Arka'); } }
+async function switchCam(){
+  camFacing = camFacing === 'user' ? 'environment' : 'user';
+  try { localStorage.setItem('kameraYonu', camFacing); } catch(e){}
+  camLabels();
+  if(camOK){ try { await initCam(); } catch(e){ camFacing = camFacing === 'user' ? 'environment' : 'user'; camLabels(); try { await initCam(); } catch(e2){} } }
+  resetTracking();
+}
+function resetTracking(){ CTL.hands.L = CTL.hands.R = null; for(const f of [CTL.fL, CTL.fR]){ f.x.x = null; f.y.x = null; } CTL.out = {L:false, R:false}; }
 async function initModel(){
   const fs = await FilesetResolver.forVisionTasks(WASM);
   const opts = d => ({baseOptions:{modelAssetPath:GMODEL, delegate:d}, runningMode:'VIDEO', numHands:2,
@@ -641,6 +658,7 @@ $('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(
 $('devRec').addEventListener('click', () => { DEV.rec = !DEV.rec; saveDev(); devLabels(); });
 cv.addEventListener('pointerdown', () => { if(phase === 'calib' && CB.done) toMenu(); });
 devLabels(); calibNoteUpdate();
+$('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam); camLabels();
 globalThis.__YARIS = {CTL, CB, G, handFeatures, handVote, processHands, calibStart, get CAL(){ return CAL; }, set phase(v){ phase = v; }, get phase(){ return phase; }, raceReset, update, startRace};
 }
 </script>
