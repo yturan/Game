@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Taş Kağıt Makas</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+/* Taş Kağıt Makas — orman hayvanlarına karşı
+   Karar iki bağımsız ipucuna dayanır: parmak geometrisi (3D el noktaları) + modelin el işareti.
+   Çelişirse karar verilmez; karar 0,35 sn kararlı kalmadan kilitlenmez; hayvan seçimi çocuğun kararından sonra açılır. */
+:root{--ink:#1b2a4a;--accent:#ff4f7a;--sun:#ffd23f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#2f8f4e;font-family:'Baloo 2',system-ui,sans-serif;color:var(--ink)}
+canvas#game{position:fixed;inset:0;width:100%;height:100%;display:block}
+video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+.hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
+.hud[hidden],.screen[hidden]{display:none}
+.pill{background:#fff;border-radius:999px;padding:4px 18px;font-size:clamp(18px,2.6vw,30px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud .btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:8px 18px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
+.screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(27,42,74,.4);padding:16px;overflow:auto}
+.card{background:#fff;border-radius:28px;padding:clamp(18px,3.5vw,36px);max-width:620px;width:100%;text-align:center;box-shadow:0 10px 0 rgba(0,0,0,.15)}
+h1{margin:0 0 4px;font-size:clamp(36px,6vw,58px);line-height:1.05;color:var(--accent)}
+p{margin:6px 0 12px;font-size:18px}
+.rules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}
+.rule{border:3px solid #e3edf7;border-radius:16px;padding:10px;background:#f6fbff}
+.rule b{display:block;font-size:22px}.rule span{font-size:15px}
+.opts{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:6px 0 10px}
+.go{border:0;border-radius:999px;background:var(--accent);color:#fff;font:inherit;font-size:24px;font-weight:800;padding:8px 36px;margin:6px;cursor:pointer;box-shadow:0 6px 0 #c42a52;min-height:44px}
+.go.alt{background:#4d6bff;box-shadow:0 6px 0 #2f47c2}
+.go:active{transform:translateY(4px);box-shadow:none}
+.go:disabled{opacity:.6;cursor:wait}
+.chip{border:2px solid #e3edf7;border-radius:999px;background:#f6fbff;color:var(--ink);font:inherit;font-size:15px;font-weight:700;padding:6px 14px;min-height:44px;cursor:pointer}
+.chip[aria-pressed=true]{border-color:#4d6bff;background:#eef1ff}
+.note{font-size:14px;opacity:.75;margin:10px 0 0}.note a{color:var(--ink)}
+button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
+@media(max-width:480px){.rules{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<video id="cam" playsinline muted></video>
+
+<div class="hud" id="hud" hidden>
+  <div class="pill" id="hudL">Sen 0</div>
+  <div class="btns"><button id="toMenu" type="button">Menü</button><button id="camHud" type="button">Kamera</button></div>
+  <div class="pill" id="hudR">Maymun 0</div>
+</div>
+
+<div class="screen" id="menu">
+  <div class="card">
+    <h1>Taş Kağıt Makas</h1>
+    <p>Orman hayvanlarına karşı oyna. "Taş, kağıt, makas, şimdi!" deyince elini kameraya göster.</p>
+    <div class="rules">
+      <div class="rule"><b>Taş</b><span>Yumruk</span></div>
+      <div class="rule"><b>Kağıt</b><span>Açık el, dört parmak açık</span></div>
+      <div class="rule"><b>Makas</b><span>İşaret ve orta parmak açık</span></div>
+    </div>
+    <div class="opts" role="group" aria-label="Rakip">
+      <button class="chip" data-op="0">Kedi</button><button class="chip" data-op="1">Köpek</button><button class="chip" data-op="2">Maymun</button><button class="chip" data-op="3">Ayı</button><button class="chip" data-op="4">Penguen</button>
+    </div>
+    <button class="go" id="play">5'e kadar oyna</button>
+    <div class="opts"><button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button></div>
+    <p class="note">Elini kameraya 0,5–2 metre uzaklıkta göster. Görüntü cihazdan çıkmaz. Kamera yoksa klavye: T taş, K kağıt, M makas. <a href="oyunlar.html">Diğer oyunlar</a></p>
+  </div>
+</div>
+
+<div class="screen" id="over" hidden>
+  <div class="card">
+    <h1 id="overT">Kazandın!</h1>
+    <p id="result"></p>
+    <button class="go" id="again">Tekrar oyna</button>
+    <button class="go alt" id="back">Menü</button>
+  </div>
+</div>
+
+<script type="module">
+import {FilesetResolver, GestureRecognizer} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+{
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const GMODEL = "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task";
+const WIN = 5;
+const $ = id => document.getElementById(id);
+const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
+let W = 0, H = 0;
+function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W*d; cv.height = H*d; ctx.setTransform(d,0,0,d,0,0); }
+addEventListener('resize', resize); resize();
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const DEV = {panel:false};
+try { Object.assign(DEV, JSON.parse(localStorage.getItem('tkmDev') || '{}')); } catch(e){}
+const saveDev = () => { try { localStorage.setItem('tkmDev', JSON.stringify(DEV)); } catch(e){} };
+
+/* ================= SES ================= */
+let ac = null;
+function sfx(f1, f2, dur, type = 'triangle', vol = .2){
+  if(!ac) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur + .02);
+}
+
+/* ================= KAMERA + MODEL ================= */
+let rec = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '', delegate = '-';
+let camFacing = 'user';
+try { camFacing = localStorage.getItem('kameraYonu') || 'user'; } catch(e){}
+async function initCam(){
+  if(video.srcObject){ video.srcObject.getTracks().forEach(tr => tr.stop()); video.srcObject = null; }
+  const base = {width:{ideal:1280}, height:{ideal:720}};
+  let s;
+  try { s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:{exact:camFacing}}, audio:false}); }
+  catch(e){ s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:camFacing}, audio:false}); }
+  video.srcObject = s; await video.play(); camOK = true; lastVT = -1;
+}
+function camLabels(){ for(const id of ['camBtn', 'camHud']) $(id).textContent = 'Kamera: ' + (camFacing === 'user' ? 'Ön' : 'Arka'); }
+async function switchCam(){
+  camFacing = camFacing === 'user' ? 'environment' : 'user';
+  try { localStorage.setItem('kameraYonu', camFacing); } catch(e){}
+  camLabels();
+  if(camOK){ try { await initCam(); } catch(e){ camFacing = camFacing === 'user' ? 'environment' : 'user'; camLabels(); try { await initCam(); } catch(e2){} } }
+  HAND.cur = null; HAND.lastPc = null;
+}
+async function initModel(){
+  const fs = await FilesetResolver.forVisionTasks(WASM);
+  const opts = d => ({baseOptions:{modelAssetPath:GMODEL, delegate:d}, runningMode:'VIDEO', numHands:2,
+    minHandDetectionConfidence:.5, minHandPresenceConfidence:.5, minTrackingConfidence:.5});
+  try { rec = await GestureRecognizer.createFromOptions(fs, opts('GPU')); delegate = 'GPU'; }
+  catch(e){ rec = await GestureRecognizer.createFromOptions(fs, opts('CPU')); delegate = 'CPU'; }
+}
+
+/* ================= EL KARARI ================= */
+const GN = {tas:'Taş', kagit:'Kağıt', makas:'Makas'};
+const BEATS = {tas:'makas', kagit:'tas', makas:'kagit'};
+const MMAP = {Closed_Fist:'tas', Open_Palm:'kagit', Victory:'makas'};
+const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
+/* parmak açıklığı: uç-bilek mesafesi / orta eklem-bilek mesafesi (açık ≈1,5, kıvrık ≈0,8); elin duruş yönünden bağımsız */
+function fingerRatios(wl){ return [5, 9, 13, 17].map(k => d3(wl[k + 3], wl[0])/(d3(wl[k + 1], wl[0]) || 1e-3)); }
+const OPEN = 1.25, CLOSED = 1.05;
+function geoClass(r){
+  const st = r.map(q => q > OPEN ? 1 : q < CLOSED ? 0 : -1);
+  if(st.includes(-1)) return null;
+  const [i, m, rg, p] = st;
+  if(!i && !m && !rg && !p) return 'tas';
+  if(i && m && rg && p) return 'kagit';
+  if(i && m && !rg && !p) return 'makas';
+  return null;
+}
+function decide(geo, mc, ms){
+  const m = MMAP[mc] || null;
+  if(geo){
+    if(!m) return mc === 'None' || ms < .7 ? geo : null;   // model başka bir işarete eminse şüpheli: karar yok
+    if(m === geo) return geo;
+    return ms < .6 ? geo : null;                          // çelişki: model eminse karar yok
+  }
+  return m && ms > .88 ? m : null;                        // geometri belirsizse sadece çok emin model
+}
+const HAND = {cur:null, lastPc:null, dec:null, cand:null, candT:0, fps:0, fpsN:0, fpsT:0, lastT:0};
+function processHands(res, t){
+  HAND.fpsN++; if(t - HAND.fpsT >= 1){ HAND.fps = HAND.fpsN/(t - HAND.fpsT); HAND.fpsN = 0; HAND.fpsT = t; }
+  const dt = HAND.lastT ? clamp(t - HAND.lastT, .005, .2) : .033; HAND.lastT = t;
+  asp = (video.videoWidth || 1280)/(video.videoHeight || 720);
+  const L = res.landmarks || [], WL = res.worldLandmarks || [], G = res.gestures || [];
+  let best = null, bs = -Infinity;
+  L.forEach((l, i) => {
+    const lm = l.map(p => ({x:(1 - p.x)*asp, y:p.y}));
+    const size = Math.hypot(lm[0].x - lm[9].x, lm[0].y - lm[9].y);
+    const pc = {x:(lm[0].x + lm[9].x)/2, y:(lm[0].y + lm[9].y)/2};
+    const near = HAND.lastPc ? -Math.hypot(pc.x - HAND.lastPc.x, pc.y - HAND.lastPc.y)*2 : 0;
+    const sc = size + near;
+    if(sc > bs){ bs = sc; best = {lm, wl:WL[i] || l, pc, size, g:(G[i] && G[i][0] && G[i][0].categoryName) || 'None', gs:(G[i] && G[i][0] && G[i][0].score) || 0}; }
+  });
+  HAND.cur = best;
+  if(!best){ HAND.dec = null; HAND.cand = null; HAND.candT = 0; return; }
+  HAND.lastPc = best.pc;
+  best.r = fingerRatios(best.wl); best.geo = geoClass(best.r);
+  HAND.dec = decide(best.geo, best.g, best.gs);
+  if(HAND.dec && HAND.dec === HAND.cand) HAND.candT += dt; else { HAND.cand = HAND.dec; HAND.candT = 0; }
+}
+function detect(){
+  if(!rec || !camOK || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const ts = performance.now();
+  processHands(rec.recognizeForVideo(video, ts), ts/1000);
+}
+const keys = {};
+addEventListener('keydown', e => {
+  const k = {KeyT:'tas', KeyK:'kagit', KeyM:'makas'}[e.code];
+  if(k){ HAND.kb = k; HAND.kbT = performance.now()/1000; }
+  if(e.code === 'KeyD'){ DEV.panel = !DEV.panel; saveDev(); devLabels(); }
+});
+const LOCK = .35, GRACE = .25, SHOWMAX = 2.6;
+function stableChoice(t){
+  if(HAND.kb && t - HAND.kbT < .5) return HAND.kb;
+  return HAND.cand && HAND.candT >= LOCK ? HAND.cand : null;
+}
+
+/* ================= OYUN ================= */
+const CRIT = [
+  {n:'Kedi', c:'#ffa94d', d:'#d9771f', ear:'tri'}, {n:'Köpek', c:'#c8915a', d:'#8d5a2b', ear:'flop'},
+  {n:'Maymun', c:'#9c6b43', d:'#e8c39e', ear:'round'}, {n:'Ayı', c:'#7a5230', d:'#4e3219', ear:'round'},
+  {n:'Penguen', c:'#2d3142', d:'#ffffff', ear:'none'}
+];
+let opp = 2;
+try { opp = +(localStorage.getItem('tkmOpp') ?? 2); } catch(e){}
+let phase = 'menu', T = 0;
+const R = {me:0, op:0, round:0, mine:null, theirs:null, res:'', beat:0, hist:[], msg:''};
+const BEATN = ['Taş…', 'Kağıt…', 'Makas…', 'ŞİMDİ!'];
+function newMatch(){ R.me = 0; R.op = 0; R.round = 0; R.hist = []; nextRound(); }
+function nextRound(){ R.mine = null; R.theirs = null; R.res = ''; R.msg = ''; phase = 'ready'; T = 0; }
+function update(dt, t){
+  T += dt;
+  if(phase === 'ready'){
+    // el görününce geri sayım başlar
+    if(HAND.cur || !camOK || HAND.kb){ if(T > .6){ phase = 'count'; T = 0; R.beat = -1; } }
+    else T = Math.min(T, .3);
+  } else if(phase === 'count'){
+    const b = Math.floor(T/.6);
+    if(b !== R.beat && b < 3){ R.beat = b; sfx(420 + b*60, 300, .12, 'square', .12); }
+    if(T >= 1.8){ phase = 'show'; T = 0; R.beat = 3; sfx(900, 600, .18, 'square', .15); HAND.cand = null; HAND.candT = 0; }
+  } else if(phase === 'show'){
+    const c = T > GRACE ? stableChoice(t) : null;
+    if(c){
+      R.mine = c;
+      // hayvanın seçimi çocuğun kararı kilitlendikten sonra yapılır ve açılır
+      R.theirs = ['tas', 'kagit', 'makas'][Math.random()*3 | 0];
+      R.res = R.mine === R.theirs ? 'draw' : BEATS[R.mine] === R.theirs ? 'win' : 'lose';
+      if(R.res === 'win'){ R.me++; sfx(520, 1040, .15); setTimeout(() => sfx(780, 1560, .2), 120); }
+      else if(R.res === 'lose'){ R.op++; sfx(300, 150, .3, 'sawtooth', .1); }
+      else sfx(500, 500, .15);
+      R.round++; R.hist.push([R.mine, R.theirs, R.res]);
+      phase = 'reveal'; T = 0;
+    } else if(T > SHOWMAX){ R.msg = 'Elini göremedim, tekrar!'; phase = 'miss'; T = 0; }
+  } else if(phase === 'reveal'){
+    if(T > 2.4){ if(R.me >= WIN || R.op >= WIN) endMatch(); else nextRound(); }
+  } else if(phase === 'miss'){
+    if(T > 1.4) nextRound();
+  }
+}
+
+/* ================= ÇİZİM ================= */
+function circle(x, y, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+function rrect(x, y, w, h, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+function outlined(t, x, y, size, fill){
+  ctx.font = `800 ${size}px "Baloo 2",sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size/7); ctx.strokeStyle = '#1b2a4a'; ctx.strokeText(t, x, y);
+  ctx.fillStyle = fill; ctx.fillText(t, x, y);
+}
+function drawRock(x, y, r){
+  ctx.fillStyle = '#8b95a5'; ctx.beginPath();
+  const pts = [[-.95,.1],[-.7,-.65],[-.1,-.95],[.6,-.7],[.98,-.05],[.75,.65],[.05,.9],[-.65,.7]];
+  pts.forEach(([a, b], i) => i ? ctx.lineTo(x + a*r, y + b*r) : ctx.moveTo(x + a*r, y + b*r)); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(3, r*.06); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.ellipse(x - r*.3, y - r*.4, r*.3, r*.15, -.5, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(27,42,74,.25)'; ctx.beginPath(); ctx.ellipse(x + r*.3, y + r*.35, r*.22, r*.1, .4, 0, 7); ctx.fill();
+}
+function drawPaper(x, y, r){
+  ctx.save(); ctx.translate(x, y); ctx.rotate(-.12);
+  rrect(-r*.72, -r*.9, r*1.44, r*1.8, r*.08, '#ffffff');
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(3, r*.06); ctx.beginPath(); ctx.roundRect(-r*.72, -r*.9, r*1.44, r*1.8, r*.08); ctx.stroke();
+  ctx.strokeStyle = '#9ec5ff'; ctx.lineWidth = Math.max(2, r*.04);
+  for(let k = 0; k < 6; k++){ const yy = -r*.55 + k*r*.24; ctx.beginPath(); ctx.moveTo(-r*.5, yy); ctx.lineTo(r*.5, yy); ctx.stroke(); }
+  ctx.restore();
+}
+function drawScissors(x, y, r){
+  ctx.save(); ctx.translate(x, y);
+  ctx.lineCap = 'round';
+  for(const s of [-1, 1]){
+    ctx.save(); ctx.rotate(s*.32);
+    ctx.fillStyle = '#dfe7f0'; ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(3, r*.05);
+    ctx.beginPath(); ctx.moveTo(-r*.08, r*.1); ctx.lineTo(0, -r*.95); ctx.lineTo(r*.08, r*.1); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = s < 0 ? '#ff4f7a' : '#4d6bff'; ctx.lineWidth = r*.12;
+    ctx.beginPath(); ctx.ellipse(0, r*.48, r*.2, r*.3, 0, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
+  circle(0, 0, r*.07, '#1b2a4a');
+  ctx.restore();
+}
+const ICON = {tas:drawRock, kagit:drawPaper, makas:drawScissors};
+function animalHead(cr, x, y, r){
+  const poly = (pts, c) => { ctx.fillStyle = c; ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.fill(); };
+  if(cr.ear === 'tri') for(const s of [-1, 1]) poly([[x + s*r*.9, y - r*.2], [x + s*r*.7, y - r*1.2], [x + s*r*.15, y - r*.8]], cr.c);
+  if(cr.ear === 'round') for(const s of [-1, 1]){ circle(x + s*r*.8, y - r*.7, r*.35, cr.c); circle(x + s*r*.8, y - r*.7, r*.17, cr.d); }
+  circle(x, y, r, cr.c);
+  if(cr.ear === 'flop') for(const s of [-1, 1]){ ctx.fillStyle = cr.d; ctx.beginPath(); ctx.ellipse(x + s*r*.95, y + r*.1, r*.25, r*.55, s*.3, 0, 7); ctx.fill(); }
+  if(cr.n === 'Penguen'){ circle(x - r*.35, y, r*.4, '#fff'); circle(x + r*.35, y, r*.4, '#fff'); }
+  if(cr.n === 'Maymun'){ ctx.fillStyle = cr.d; ctx.beginPath(); ctx.ellipse(x, y + r*.15, r*.75, r*.65, 0, 0, 7); ctx.fill(); }
+  for(const s of [-1, 1]){ circle(x + s*r*.38, y - r*.08, r*.17, '#fff'); circle(x + s*r*.38, y - r*.05, r*.09, '#1b2a4a'); }
+  if(cr.n === 'Penguen'){ ctx.fillStyle = '#ff9f43'; ctx.beginPath(); ctx.moveTo(x - r*.2, y + r*.25); ctx.lineTo(x + r*.2, y + r*.25); ctx.lineTo(x, y + r*.6); ctx.fill(); }
+  else circle(x, y + r*.3, r*.12, '#1b2a4a');
+  const mood = phase === 'reveal' ? (R.res === 'lose' ? 1 : R.res === 'win' ? -1 : 0) : 0;
+  ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(2, r*.06); ctx.beginPath();
+  if(mood >= 0) ctx.arc(x, y + r*.42, r*.22, (.15 + (mood ? 0 : .2))*Math.PI, (.85 - (mood ? 0 : .2))*Math.PI);
+  else ctx.arc(x, y + r*.7, r*.22, 1.2*Math.PI, 1.8*Math.PI);
+  ctx.stroke();
+}
+function card(x, y, r, label, col){
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.roundRect(x - r*1.25, y - r*1.25 + 10, r*2.5, r*2.5, r*.3); ctx.fill();
+  rrect(x - r*1.25, y - r*1.25, r*2.5, r*2.5, r*.3, col);
+  outlined(label, x, y + r*1.55, Math.min(34, r*.32), '#fff');
+}
+function drawForest(t){
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#8ad7ff'); g.addColorStop(.55, '#d4f3ff'); g.addColorStop(.56, '#4caf50'); g.addColorStop(1, '#2f8f4e');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for(let i = 0; i < 12; i++){
+    const x = i*W/11, h = H*(.2 + ((i*37) % 10)/60), base = H*.56;
+    rrect(x - h*.04, base - h*.25, h*.08, h*.25, 2, '#6d4527');
+    ctx.fillStyle = i % 2 ? '#2f8f4e' : '#3ea85c';
+    for(let k = 0; k < 3; k++){ const w = h*(.32 - k*.07), yb = base - h*.2 - k*h*.22; ctx.beginPath(); ctx.moveTo(x - w, yb); ctx.lineTo(x + w, yb); ctx.lineTo(x, yb - h*.38); ctx.fill(); }
+  }
+}
+function render(t){
+  drawForest(t);
+  const r = Math.min(W*.13, H*.17), lx = W*.28, rx = W*.72, cy = H*.5;
+  const cr = CRIT[opp];
+  // çocuk tarafı
+  const rev = phase === 'reveal';
+  const mineCol = rev ? (R.res === 'win' ? '#3ddc84' : R.res === 'lose' ? '#ff8fa3' : '#ffd23f') : '#ffffff';
+  const theirCol = rev ? (R.res === 'lose' ? '#3ddc84' : R.res === 'win' ? '#ff8fa3' : '#ffd23f') : '#ffffff';
+  card(lx, cy, r, 'Sen', mineCol);
+  card(rx, cy, r, cr.n, theirCol);
+  const shake = phase === 'count' ? Math.abs(Math.sin(T*Math.PI/.6))*r*.25 : 0;
+  if(rev){ ICON[R.mine](lx, cy, r*.85); ICON[R.theirs](rx, cy, r*.85); }
+  else {
+    // canlı algılama: çocuk ne gösteriyor (soluk), kilitlenme halkası
+    const live = HAND.kb && t() - HAND.kbT < .5 ? HAND.kb : HAND.dec;
+    if(live){ ctx.globalAlpha = phase === 'show' ? .9 : .35; ICON[live](lx, cy, r*.8); ctx.globalAlpha = 1; }
+    else if(phase !== 'menu') outlined(HAND.cur ? '?' : '✋', lx, cy, r*.8, '#cfd8e3');
+    if(phase === 'show' && HAND.cand && T > GRACE){
+      ctx.strokeStyle = '#3ddc84'; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(lx, cy, r*1.05, -Math.PI/2, -Math.PI/2 + Math.PI*2*clamp(HAND.candT/LOCK, 0, 1)); ctx.stroke();
+    }
+    drawRock(rx, cy - shake, r*.6);
+  }
+  animalHead(cr, rx, cy - r*1.95, r*.45);
+  outlined('VS', W/2, cy, Math.min(64, r*.6), '#ffd23f');
+  if(phase === 'count' || phase === 'show') outlined(BEATN[clamp(R.beat, 0, 3)], W/2, H*.16 + 30, Math.min(72, W*.09), R.beat === 3 ? '#ffd23f' : '#fff');
+  if(phase === 'ready') outlined(HAND.cur || !camOK ? 'Hazır…' : 'Elini kameraya göster', W/2, H*.16 + 30, Math.min(48, W*.06), '#fff');
+  if(phase === 'miss') outlined(R.msg, W/2, H*.16 + 30, Math.min(48, W*.06), '#ff8fa3');
+  if(rev){
+    const txt = R.res === 'win' ? 'Kazandın!' : R.res === 'lose' ? `${cr.n} kazandı!` : 'Berabere!';
+    outlined(txt, W/2, H*.16 + 30, Math.min(72, W*.09), R.res === 'win' ? '#3ddc84' : R.res === 'lose' ? '#ff8fa3' : '#ffd23f');
+    outlined(`${GN[R.mine]} – ${GN[R.theirs]}`, W/2, H*.16 + 30 + Math.min(60, W*.075), Math.min(30, W*.04), '#fff');
+  }
+}
+const HC = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+function drawPreview(){
+  if(!camOK || video.readyState < 2) return;
+  const pw = Math.min(200, W*.22), ph = pw/asp, px = 12, py = H - ph - 12;
+  ctx.save(); ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.clip();
+  ctx.translate(px + pw, py); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph); ctx.restore();
+  const h = HAND.cur;
+  if(h){ ctx.strokeStyle = HAND.dec ? '#3ddc84' : '#ffd23f'; ctx.lineWidth = 2; for(const [a, b] of HC){ ctx.beginPath(); ctx.moveTo(px + h.lm[a].x/asp*pw, py + h.lm[a].y*ph); ctx.lineTo(px + h.lm[b].x/asp*pw, py + h.lm[b].y*ph); ctx.stroke(); } }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.stroke();
+}
+function drawPanel(){
+  if(!DEV.panel) return;
+  const w = Math.min(430, W - 24), hh = 150, x = W - w - 12, y = H - hh - 12, h = HAND.cur;
+  ctx.fillStyle = 'rgba(10,16,32,.8)'; ctx.beginPath(); ctx.roundRect(x, y, w, hh, 12); ctx.fill();
+  ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
+  const N = ['işaret', 'orta', 'yüzük', 'serçe'];
+  const L = [
+    `El işareti modeli (${delegate}) · ${HAND.fps.toFixed(0)} fps · kamera ${camFacing === 'user' ? 'ön' : 'arka'}`,
+    h ? 'parmaklar: ' + h.r.map((q, i) => `${N[i]} ${q.toFixed(2)}${q > OPEN ? '↑' : q < CLOSED ? '↓' : '?'}`).join('  ') : 'el yok',
+    h ? `geometri: ${h.geo ? GN[h.geo] : 'belirsiz'} · model: ${h.g} ${h.gs.toFixed(2)}` : '',
+    `karar: ${HAND.dec ? GN[HAND.dec] : '—'} · kararlılık ${HAND.candT.toFixed(2)}/${LOCK} sn`,
+    `geçmiş: ${R.hist.slice(-5).map(x => GN[x[0]][0] + GN[x[1]][0]).join(' ') || '—'}`
+  ];
+  L.forEach((s, i) => ctx.fillText(s, x + 10, y + 10 + i*26, w - 20));
+}
+
+/* ================= DÖNGÜ ================= */
+const tnow = () => performance.now()/1000;
+let last = performance.now();
+function loop(){
+  const now = performance.now(), dt = Math.min(.05, (now - last)/1000); last = now;
+  detect();
+  if(phase !== 'menu' && phase !== 'end') update(dt, tnow());
+  render(tnow);
+  if(phase !== 'menu'){ drawPreview(); drawPanel(); }
+  if(phase !== 'menu' && !camOK && note2) outlined(note2, W/2, H*.9, Math.min(22, W*.03), '#fff');
+  $('hudL').textContent = `Sen ${R.me}`;
+  $('hudR').textContent = `${CRIT[opp].n} ${R.op}`;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ================= MENÜ ================= */
+async function startMatch(){
+  const b = $('play'); b.disabled = true;
+  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
+  if(!camOK){ try { await initCam(); } catch(e){ note2 = 'Kamera açılamadı, klavyeyle oynayabilirsin (T, K, M)'; } }
+  if(camOK && !rec){ try { await initModel(); } catch(e){ camOK = false; note2 = 'El algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; } }
+  b.disabled = false;
+  newMatch();
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
+}
+function endMatch(){
+  phase = 'end';
+  $('hud').hidden = true; $('over').hidden = false;
+  const won = R.me > R.op;
+  $('overT').textContent = won ? 'Kazandın!' : `${CRIT[opp].n} kazandı!`;
+  $('result').textContent = `Skor ${R.me} – ${R.op} (${R.round} el)`;
+  $('again').focus();
+}
+function toMenu(){ phase = 'menu'; $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; }
+function oppLabels(){ document.querySelectorAll('[data-op]').forEach(b => b.setAttribute('aria-pressed', +b.dataset.op === opp)); }
+function devLabels(){ $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel); }
+document.querySelectorAll('[data-op]').forEach(b => b.addEventListener('click', () => { opp = +b.dataset.op; try { localStorage.setItem('tkmOpp', opp); } catch(e){} oppLabels(); }));
+$('play').addEventListener('click', startMatch);
+$('again').addEventListener('click', startMatch);
+$('back').addEventListener('click', toMenu);
+$('toMenu').addEventListener('click', toMenu);
+$('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam);
+$('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(); devLabels(); });
+oppLabels(); devLabels(); camLabels();
+globalThis.__TKM = {HAND, R, processHands, geoClass, fingerRatios, decide, startMatch, get phase(){ return phase; }};
+}
+</script>
+</body>
+</html>
