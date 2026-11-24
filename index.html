@@ -17,6 +17,7 @@ video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
 .hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
 .hud[hidden],.msg[hidden],.screen[hidden]{display:none}
 .pill{background:#fff;border-radius:999px;padding:4px 18px;font-size:clamp(20px,3vw,32px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud .btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 .hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:8px 18px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
 .msg{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 22px;border-radius:16px;font-size:clamp(18px,2.6vw,28px);font-weight:700;text-align:center;max-width:92vw}
 .screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(27,42,74,.35);padding:16px;overflow:auto}
@@ -49,7 +50,7 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
 
 <div class="hud" id="hud" hidden>
   <div class="pill" id="score">Puan: 0</div>
-  <button id="toMenu" type="button">Oyunlar</button>
+  <div class="btns"><button id="toMenu" type="button">Oyunlar</button><button id="camHud" type="button">Kamera</button></div>
   <div class="pill" id="time">60</div>
 </div>
 <div class="msg" id="msg" hidden></div>
@@ -59,6 +60,7 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
     <h1>Hareket Oyunları</h1>
     <p>Bir oyun seç, kameranın 2–3 adım önüne geç ve vücudunla oyna!</p>
     <div class="games">
+      <a class="game" href="tkm.html" style="text-decoration:none"><i class="dot" style="background:#8b95a5"></i><div><b>Taş Kağıt Makas</b><span>Orman hayvanlarına karşı elinle taş, kağıt ya da makas göster.</span></div></a>
       <a class="game" href="yaris.html" style="text-decoration:none"><i class="dot" style="background:#4d6bff"></i><div><b>Orman Rallisi</b><span>İki elinle hayali direksiyonu çevir; başparmak yukarı gaz, aşağı geri, yumruk fren.</span></div></a>
       <button class="game" data-game="balloon"><i class="dot" style="background:#ff4f7a"></i><div><b>Balon Avı</b><span>Düşen balonları parmağındaki ya da şapkandaki iğneyle patlat.</span></div></button>
       <button class="game" data-game="dino"><i class="dot" style="background:#3fbf5a"></i><div><b>Dinozor Koşusu</b><span>Zıplayarak kaktüslerin üstünden atla, çömelerek arıların altından geç.</span></div></button>
@@ -72,7 +74,7 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
     </div>
     <p class="note">Görüntü cihazdan çıkmaz, her şey tarayıcıda işlenir. Kamera yoksa klavyeyle denenebilir: Boşluk zıpla/çırp, ↓ çömel, → koş; balonlar fareyle de patlar.</p>
     <div class="dev" role="group" aria-label="Geliştirici ayarları">
-      <button class="chip" id="devDebug"></button><button class="chip" id="devRec"></button><button class="chip" id="devModel"></button>
+      <button class="chip" id="camBtn"></button><button class="chip" id="devDebug"></button><button class="chip" id="devRec"></button><button class="chip" id="devModel"></button>
     </div>
   </div>
 </div>
@@ -177,10 +179,26 @@ const DEV = {debug:false, rec:false, model:'lite'};
 try { Object.assign(DEV, JSON.parse(localStorage.getItem('hareketDev') || '{}')); } catch(e){}
 const saveDev = () => { try { localStorage.setItem('hareketDev', JSON.stringify(DEV)); } catch(e){} };
 let landmarker = null, loadedModel = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '';
+/* Kamera yönü: ön (user) / arka (environment); tercih tüm oyunlarda ortak */
+let camFacing = 'user';
+try { camFacing = localStorage.getItem('kameraYonu') || 'user'; } catch(e){}
 async function initCam(){
-  const s = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640}, height:{ideal:480}, facingMode:'user'}, audio:false});
-  video.srcObject = s; await video.play(); camOK = true;
+  if(video.srcObject){ video.srcObject.getTracks().forEach(tr => tr.stop()); video.srcObject = null; }
+  const base = {width:{ideal:640}, height:{ideal:480}};
+  let s;
+  try { s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:{exact:camFacing}}, audio:false}); }
+  catch(e){ s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:camFacing}, audio:false}); }
+  video.srcObject = s; await video.play(); camOK = true; lastVT = -1;
 }
+function camLabels(){ for(const id of ['camBtn', 'camHud']){ const b = document.getElementById(id); if(b) b.textContent = 'Kamera: ' + (camFacing === 'user' ? 'Ön' : 'Arka'); } }
+async function switchCam(){
+  camFacing = camFacing === 'user' ? 'environment' : 'user';
+  try { localStorage.setItem('kameraYonu', camFacing); } catch(e){}
+  camLabels();
+  if(camOK){ try { await initCam(); } catch(e){ camFacing = camFacing === 'user' ? 'environment' : 'user'; camLabels(); try { await initCam(); } catch(e2){} } }
+  resetTracking();
+}
+function resetTracking(){ lock = null; sOn = false; for(let i = 0; i < 33; i++){ FX[i].x = null; FY[i].x = null; } ENG.reset(); ENG.buf.length = 0; ENG.prevS = null; ENG.B = null; }
 async function initPose(){
   if(landmarker && loadedModel === DEV.model) return;
   if(landmarker){ try { landmarker.close(); } catch(e){} landmarker = null; }
@@ -1485,6 +1503,7 @@ $('devDebug').addEventListener('click', () => { DEV.debug = !DEV.debug; saveDev(
 $('devRec').addEventListener('click', () => { DEV.rec = !DEV.rec; saveDev(); devLabels(); });
 $('devModel').addEventListener('click', () => { DEV.model = DEV.model === 'full' ? 'lite' : 'full'; saveDev(); devLabels(); });
 devLabels();
+$('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam); camLabels();
 }
 </script>
 </body>
