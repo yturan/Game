@@ -58,10 +58,10 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
     <h1>Orman Rallisi</h1>
     <p>Hayali bir direksiyonu iki elinle tut: sol elin 9'da, sağ elin 3'te. Kameraya 1–1,5 metre uzaklıkta otur ya da dur.</p>
     <div class="rules">
-      <div class="rule"><b>Direksiyon</b><span>Ellerini direksiyon gibi çevir</span></div>
-      <div class="rule"><b>Gaz</b><span>İki başparmak yukarı</span></div>
-      <div class="rule"><b>Geri</b><span>Bileklerini çevir, iki başparmak aşağı</span></div>
-      <div class="rule"><b>Fren</b><span>Yumruk yap, başparmaklar içeride</span></div>
+      <div class="rule"><b>Gaz</b><span>İki elin yumruk, direksiyonu tutuyor</span></div>
+      <div class="rule"><b>Fren</b><span>Bir elinle başparmak yukarı</span></div>
+      <div class="rule"><b>Geri</b><span>Bir elinle başparmak aşağı, öbür elin direksiyonu çevirir</span></div>
+      <div class="rule"><b>Direksiyon</b><span>Yumruklarını direksiyon gibi çevir</span></div>
     </div>
     <button class="go" id="race">Yarışa başla</button>
     <button class="go alt" id="calib">Kalibrasyon</button>
@@ -141,7 +141,7 @@ async function switchCam(){
   if(camOK){ try { await initCam(); } catch(e){ camFacing = camFacing === 'user' ? 'environment' : 'user'; camLabels(); try { await initCam(); } catch(e2){} } }
   resetTracking();
 }
-function resetTracking(){ CTL.hands.L = CTL.hands.R = null; for(const f of [CTL.fL, CTL.fR]){ f.x.x = null; f.y.x = null; } CTL.out = {L:false, R:false}; }
+function resetTracking(){ CTL.hands.L = CTL.hands.R = null; for(const f of [CTL.fL, CTL.fR]){ f.x.x = null; f.y.x = null; } CTL.out = {L:false, R:false}; CTL.C = null; }
 async function initModel(){
   const fs = await FilesetResolver.forVisionTasks(WASM);
   const opts = d => ({baseOptions:{modelAssetPath:GMODEL, delegate:d}, runningMode:'VIDEO', numHands:2,
@@ -198,20 +198,20 @@ function handVote(h, side, prevOut){
   let out = prevOut ? h.ext > P.extMid - P.extGap : h.ext > P.extMid + P.extGap;
   if((h.g === 'Closed_Fist' && h.gs > .8 && h.ext < P.extMid + P.extGap*2) || h.touch < .18) out = false;
   h.out = out; h.extMid = P.extMid;
-  if(!out){ h.vote = 'fren'; h.s = 0; return; }
+  if(!out){ h.vote = 'yumruk'; h.s = 0; return; }
   let face = 0;
   if(P.face){ for(const f of P.face) face += clamp((h[f.k] - f.mid)/f.sep, -1, 1); face /= P.face.length; }
   const dir = clamp(-h.dirY*1.5, -1, 1);
   const model = h.g === 'Thumb_Up' ? h.gs : h.g === 'Thumb_Down' ? -h.gs : 0;
   h.face = face; h.dir = dir; h.model = model;
   h.s = P.face ? .4*face + .35*dir + .25*model : .55*dir + .45*model;
-  h.vote = h.s > .25 ? 'gaz' : h.s < -.25 ? 'geri' : 'belirsiz';
+  h.vote = h.s > .25 ? 'like' : h.s < -.25 ? 'dislike' : 'belirsiz';
 }
 
 const CTL = {
   hands:{L:null, R:null}, seenT:{L:-9, R:-9}, out:{L:false, R:false},
   fL:{x:new OneEuro(), y:new OneEuro()}, fR:{x:new OneEuro(), y:new OneEuro()},
-  wheel:0, steer:0, state:'yok', cand:'yok', pendT:0, lastT:0, fps:0, fpsN:0, fpsT:0, count:0, log:[]
+  wheel:0, steer:0, src:'-', C:null, rad:0, state:'yok', cand:'yok', pendT:0, lastT:0, fps:0, fpsN:0, fpsT:0, count:0, log:[]
 };
 function setState(s, t){ CTL.state = s; CTL.log.push({t, s}); if(CTL.log.length > 6) CTL.log.shift(); if(REC.on) REC.events.push([+(t - REC.t0).toFixed(3), s]); }
 
@@ -245,30 +245,51 @@ function processHands(res, t){
     } else if(t - CTL.seenT[side] > .35){ CTL.hands[side] = null; const f = side === 'L' ? CTL.fL : CTL.fR; f.x.x = null; f.y.x = null; }
   }
   const hL = CTL.hands.L, hR = CTL.hands.R;
-  // direksiyon açısı (sürekli)
-  if(hL && hR){
-    CTL.wheel = Math.atan2(hR.pc.y - hL.pc.y, hR.pc.x - hL.pc.x);
-    let deg = CTL.wheel*180/Math.PI;
-    deg = Math.sign(deg)*Math.max(0, Math.abs(deg) - 5);
-    CTL.steer = Math.sign(deg)*Math.pow(clamp(Math.abs(deg)/60, 0, 1), 1.2);
-  } else CTL.steer *= .85;
+  // önce el işaretleri (yön özelliği bir önceki direksiyon açısını kullanır)
   for(const side of ['L', 'R']){
     const h = CTL.hands[side];
     if(!h) continue;
-    if(!h.f || h.ft !== t){ Object.assign(h, handFeatures(h.lm, h.wl, side, CTL.wheel)); h.ft = t; handVote(h, side, CTL.out[side]); CTL.out[side] = h.out; }
+    if(h.ft !== t){ Object.assign(h, handFeatures(h.lm, h.wl, side, CTL.wheel)); h.ft = t; handVote(h, side, CTL.out[side]); CTL.out[side] = h.out; }
   }
+  /* direksiyon:
+     iki el de yumruksa → iki elin arasındaki çizginin açısı; aynı anda direksiyonun merkezi ve yarıçapı öğrenilir
+     bir el başparmak işareti yapıyorsa ya da tek el görünüyorsa → sadece yumruk olan elin merkeze göre açısı */
+  const grip = h => h && h.vote === 'yumruk';
+  let wheel = null;
+  if(grip(hL) && grip(hR)){
+    wheel = Math.atan2(hR.pc.y - hL.pc.y, hR.pc.x - hL.pc.x); CTL.src = 'iki el';
+    const mid = {x:(hL.pc.x + hR.pc.x)/2, y:(hL.pc.y + hR.pc.y)/2}, rad = Math.hypot(hR.pc.x - hL.pc.x, hR.pc.y - hL.pc.y)/2;
+    if(!CTL.C){ CTL.C = mid; CTL.rad = rad; }
+    else { const k = Math.min(1, dt*3); CTL.C.x += (mid.x - CTL.C.x)*k; CTL.C.y += (mid.y - CTL.C.y)*k; CTL.rad += (rad - CTL.rad)*k; }
+  } else if(CTL.C){
+    const one = grip(hL) ? ['L', hL] : grip(hR) ? ['R', hR] : null;
+    if(one){
+      const [side, h] = one, dx = h.pc.x - CTL.C.x, dy = h.pc.y - CTL.C.y;
+      if(Math.hypot(dx, dy) > CTL.rad*.4){
+        wheel = side === 'L' ? Math.atan2(-dy, -dx) : Math.atan2(dy, dx);   // L: elden merkeze, R: merkezden ele (iki el kuralıyla aynı yön)
+        CTL.src = side === 'L' ? 'sol el' : 'sağ el';
+      }
+    }
+  }
+  if(wheel !== null){
+    CTL.wheel = wheel;
+    let deg = wheel*180/Math.PI;
+    CTL.steer = Math.sign(deg)*clamp((Math.abs(deg) - 4)/41, 0, 1);   // 4° ölü bölge, 45°'de tam dönüş
+  } else { CTL.steer *= .85; CTL.src = '-'; }
   if(phase === 'calib') calibSample(hL, hR, dt);
-  // iki elin ortak kararı + kilit + bekleme
+  /* ortak karar: iki yumruk gaz · bir el like fren · bir el dislike geri (like her zaman önceliklidir: güvenli taraf) */
+  const votes = [hL, hR].filter(Boolean).map(h => h.vote);
   let cand;
-  if(!hL || !hR) cand = 'yok';
-  else if(hL.vote === 'fren' || hR.vote === 'fren') cand = 'fren';
-  else if(hL.vote === 'gaz' && hR.vote === 'gaz') cand = 'gaz';
-  else if(hL.vote === 'geri' && hR.vote === 'geri') cand = 'geri';
-  else cand = CTL.state === 'gaz' || CTL.state === 'geri' ? CTL.state : 'boşta';
+  if(!votes.length) cand = 'yok';
+  else if(votes.includes('like')) cand = 'fren';
+  else if(votes.includes('dislike')) cand = 'geri';
+  else if(votes.length === 2 && votes.every(v => v === 'yumruk')) cand = 'gaz';
+  else if(votes.includes('belirsiz')) cand = CTL.state === 'yok' ? 'boşta' : CTL.state;   // geçiş anı: son kararı koru
+  else cand = 'boşta';                                                                   // tek el yumruk: araba boşta kayar
   if(cand !== CTL.state){
     if(cand !== CTL.cand){ CTL.cand = cand; CTL.pendT = 0; }
     CTL.pendT += dt;
-    const need = cand === 'geri' ? .4 : cand === 'yok' ? .3 : .15;
+    const need = cand === 'fren' ? .1 : cand === 'geri' ? .35 : cand === 'yok' ? .3 : .15;
     if(CTL.pendT >= need) setState(cand, t);
   } else { CTL.cand = cand; CTL.pendT = 0; }
 }
@@ -281,9 +302,9 @@ function detect(){
 
 /* ================= KALİBRASYON ================= */
 const CSTEPS = [
-  {k:'grip', t:'Ellerini direksiyonu tutar gibi kaldır', s:'Sol el 9\'da, sağ el 3\'te', d:1},
-  {k:'fist', t:'Yumruk yap', s:'Başparmaklar içeride: FREN', d:1.6},
-  {k:'gaz',  t:'İki başparmak yukarı', s:'Like işareti: GAZ', d:1.6},
+  {k:'grip', t:'Direksiyonu iki yumrukla tut', s:'Sol el 9\'da, sağ el 3\'te', d:1},
+  {k:'fist', t:'Yumrukların direksiyonda kalsın', s:'İki yumruk: GAZ', d:1.6},
+  {k:'gaz',  t:'İki başparmak yukarı', s:'Like işareti: FREN', d:1.6},
   {k:'geri', t:'Bileklerini çevir, başparmaklar aşağı', s:'Dislike işareti: GERİ', d:1.6}
 ];
 const CB = {step:0, prog:0, samples:null, done:false, report:[]};
@@ -360,7 +381,7 @@ function controls(){
 }
 
 /* ================= YOL (yalancı 3D) ================= */
-const SEG = 200, RW = 2000, DRAW = 160, CAMH = 1000, CAMD = 1/Math.tan(50*Math.PI/180), MAXS = SEG*55;
+const SEG = 200, RW = 2000, DRAW = 230, CAMH = 1500, CAMD = 1/Math.tan(50*Math.PI/180), MAXS = SEG*55;
 const PLZ = CAMH*CAMD, CENT = .12;
 const CRIT = [
   {n:'Kedi', c:'#ffa94d', d:'#d9771f', ear:'tri'}, {n:'Köpek', c:'#c8915a', d:'#8d5a2b', ear:'flop'},
@@ -368,7 +389,7 @@ const CRIT = [
   {n:'Penguen', c:'#2d3142', d:'#ffffff', ear:'none'}
 ];
 const KCOL = ['#4da3ff', '#3ddc84', '#b46cff', '#ffb627', '#ff7b39'];
-let segs = [], trackLen = 0;
+let segs = [], trackLen = 0, CURVES = [], MAP = [], MAPB = null;
 function buildTrack(){
   segs = [];
   const add = curve => { const i = segs.length; segs.push({i, curve, p1:{w:{z:i*SEG}, c:{}, s:{}}, p2:{w:{z:(i + 1)*SEG}, c:{}, s:{}}, sp:[], alt:Math.floor(i/3) % 2}); };
@@ -384,6 +405,21 @@ function buildTrack(){
   }
   road(0, 40, 0, 0);
   trackLen = segs.length*SEG;
+  // viraj başlangıçları: önceden uyarı tabelaları + ekrandaki ok için
+  CURVES = [];
+  for(let i = 1; i < segs.length; i++){
+    const c = segs[i].curve, p = segs[i - 1].curve;
+    if(Math.abs(c) > .8 && (Math.abs(p) <= .8 || Math.sign(c) !== Math.sign(p))){
+      let j = i, peak = 0; while(j < segs.length && Math.sign(segs[j].curve) === Math.sign(c) && Math.abs(segs[j].curve) > .3){ peak = Math.max(peak, Math.abs(segs[j].curve)); j++; }
+      CURVES.push({i, dir:Math.sign(c), peak});
+      for(const back of [12, 24, 36]) if(i - back > 0) segs[i - back].sp.push({k:'sign', x:-Math.sign(c)*1.25, dir:Math.sign(c), sharp:peak > 3});
+    }
+  }
+  // kroki: virajları toplayarak pistin kuşbakışı çizgisi
+  MAP = []; let hd = 0, mx = 0, my = 0;
+  for(let i = 0; i < segs.length; i++){ hd += segs[i].curve*.0045; mx += Math.sin(hd); my -= Math.cos(hd); if(i % 4 === 0) MAP.push([mx, my]); }
+  const xs = MAP.map(p => p[0]), ys = MAP.map(p => p[1]);
+  MAPB = {x0:Math.min(...xs), x1:Math.max(...xs), y0:Math.min(...ys), y1:Math.max(...ys)};
   for(let i = 70; i < segs.length - 20; i++){
     if(i % 9 === 0) segs[i].sp.push({k:'tree', x:-(1.4 + rnd()*1.4)}), segs[i].sp.push({k:'tree', x:1.4 + rnd()*1.4});
     if(i % 23 === 0) segs[i].sp.push({k:'bush', x:(rnd() < .5 ? -1 : 1)*(1.2 + rnd()*.4)});
@@ -394,18 +430,19 @@ function buildTrack(){
     else segs[i].sp.push({k:'cone', x});
   }
 }
+let HY = 0;   // ufuk çizgisi: ekranın yukarısında, yol daha çok yer kaplasın
 function project(p, camX, camY, camZ){
   p.c.x = -camX; p.c.y = -camY; p.c.z = p.w.z - camZ;
   p.s.scale = CAMD/p.c.z;
-  p.s.x = W/2 + p.s.scale*p.c.x*W/2; p.s.y = H/2 - p.s.scale*p.c.y*H/2; p.s.w = p.s.scale*RW*W/2;
+  p.s.x = W/2 + p.s.scale*p.c.x*W/2; p.s.y = HY - p.s.scale*p.c.y*H/2; p.s.w = p.s.scale*RW*W/2;
 }
 const findSeg = z => segs[Math.floor(z/SEG) % segs.length];
 
 /* ================= OYUN DURUMU ================= */
 let phase = 'menu', timeLeft = ROUND, countT = 0;
-const G = {d:0, x:0, speed:0, coins:0, karts:[], bump:0, steerVis:0, hit:0};
+const G = {d:0, lap:0, x:0, speed:0, coins:0, karts:[], bump:0, steerVis:0, hit:0};
 function raceReset(){
-  G.d = 0; G.x = 0; G.speed = 0; G.coins = 0; G.bump = 0; G.hit = 0; G.steerVis = 0;
+  G.d = 0; G.lap = 0; G.x = 0; G.speed = 0; G.coins = 0; G.bump = 0; G.hit = 0; G.steerVis = 0;
   for(const s of segs) s.sp = s.sp.filter(o => o.k !== 'coin' && o.k !== 'cone' && o.k !== 'kart');
   buildTrack();
   G.karts = CRIT.map((c, i) => ({c, col:KCOL[i], d:SEG*(30 + i*45), x:[-.5, .5, 0, -.5, .5][i], sp:MAXS*(.42 + i*.07), lane:[-.5, .5, 0, -.5, .5][i]}));
@@ -419,14 +456,16 @@ function update(dt){
     if(state === 'gaz') G.speed += (G.speed < 0 ? MAXS*1.2 : MAXS/3.2)*dt;
     else if(state === 'geri') G.speed -= (G.speed > 0 ? MAXS*1.1 : MAXS/5)*dt;
     else if(state === 'fren') G.speed -= Math.sign(G.speed)*Math.min(Math.abs(G.speed), MAXS*1.1*dt);
-    else G.speed -= Math.sign(G.speed)*Math.min(Math.abs(G.speed), MAXS/7*dt);
+    else G.speed -= Math.sign(G.speed)*Math.min(Math.abs(G.speed), (state === 'yok' ? MAXS*.6 : MAXS/7)*dt);
     G.speed = clamp(G.speed, -MAXS*.25, MAXS);
-    G.x += steer*dt*(.5 + 1.5*Math.abs(pct))*Math.sign(G.speed || 1);
+    G.x += steer*dt*(.7 + 1.9*Math.abs(pct))*Math.sign(G.speed || 1);
     const seg = findSeg(G.d + PLZ);
     G.x -= dt*2*pct*pct*seg.curve*CENT;
     if(Math.abs(G.x) > 1 && Math.abs(G.speed) > MAXS*.3) G.speed -= Math.sign(G.speed)*MAXS*1.3*dt;
     G.x = clamp(G.x, -2.2, 2.2);
     G.d = Math.max(0, G.d + G.speed*dt);
+    const lap = Math.floor(G.d/trackLen);
+    if(lap !== G.lap){ G.lap = lap; for(const sg of segs) for(const o of sg.sp) o.got = false; }
     for(const o of seg.sp){
       if(o.got) continue;
       if(o.k === 'coin' && Math.abs(o.x - G.x) < .3){ o.got = true; G.coins++; sfx(900, 1500, .12, 'square', .1); }
@@ -463,11 +502,11 @@ function animalHead(cr, x, y, r){
   if(cr.n === 'Maymun'){ ctx.fillStyle = cr.d; ctx.beginPath(); ctx.ellipse(x, y + r*.15, r*.75, r*.65, 0, 0, 7); ctx.fill(); }
   for(const s of [-1, 1]){ circle(x + s*r*.38, y - r*.08, r*.17, '#fff'); circle(x + s*r*.38, y - r*.05, r*.09, '#1b2a4a'); }
 }
-function drawKart(x, y, w, col, cr, tilt){
+function drawKart(x, y, w, col, cr, tilt, steer = 0){
   ctx.save(); ctx.translate(x, y); ctx.rotate(tilt || 0);
   const h = w*.45;
   ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, 0, w*.55, h*.18, 0, 0, 7); ctx.fill();
-  rrect(-w*.5, -h*.45, w*.22, h*.45, w*.04, '#1b2a4a'); rrect(w*.28, -h*.45, w*.22, h*.45, w*.04, '#1b2a4a');
+  for(const sx of [-.39, .39]){ ctx.save(); ctx.translate(sx*w, -h*.22); ctx.rotate(steer*.45); rrect(-w*.11, -h*.23, w*.22, h*.45, w*.04, '#1b2a4a'); rrect(-w*.08, -h*.05, w*.16, h*.08, 2, '#5a6b8c'); ctx.restore(); }
   rrect(-w*.42, -h*.9, w*.84, h*.55, w*.1, col);
   rrect(-w*.3, -h*.8, w*.6, h*.12, w*.05, 'rgba(255,255,255,.35)');
   if(cr) animalHead(cr, 0, -h*1.25, w*.22);
@@ -479,21 +518,30 @@ function drawSprite(o, x, y, sc){
   if(o.k === 'tree'){ const h = 1100*u; rrect(x - h*.05, y - h*.35, h*.1, h*.35, 2, '#6d4527'); circle(x, y - h*.6, h*.3, '#2f8f4e'); circle(x - h*.15, y - h*.45, h*.2, '#3ea85c'); circle(x + h*.17, y - h*.5, h*.2, '#3ea85c'); }
   else if(o.k === 'bush'){ const h = 350*u; circle(x - h*.4, y - h*.35, h*.4, '#3ea85c'); circle(x + h*.3, y - h*.4, h*.45, '#2f8f4e'); }
   else if(o.k === 'coin' && !o.got){ const r = 120*u; circle(x, y - r*2.2, r, '#ffc93c'); circle(x, y - r*2.2, r*.55, '#ffe58a'); }
+  else if(o.k === 'sign'){
+    const h = 520*u, bw = h*.62, bh = h*.38, top = y - h;
+    rrect(x - h*.03, top + bh*.6, h*.06, h - bh*.6, 2, '#5a6b8c');
+    rrect(x - bw/2, top, bw, bh, bh*.12, o.sharp ? '#ff4f7a' : '#ffd23f');
+    ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(2, bh*.14); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for(const k of o.sharp ? [-.22, .12] : [-.05]){ const cx = x + o.dir*k*bw; ctx.beginPath(); ctx.moveTo(cx - o.dir*bw*.12, top + bh*.22); ctx.lineTo(cx + o.dir*bw*.1, top + bh*.5); ctx.lineTo(cx - o.dir*bw*.12, top + bh*.78); ctx.stroke(); }
+  }
   else if(o.k === 'cone' && !o.got){ const h = 320*u; poly([[x - h*.4, y], [x + h*.4, y], [x, y - h]], '#ff7b39'); rrect(x - h*.22, y - h*.55, h*.44, h*.12, 2, '#fff'); }
 }
 function render(t){
-  const g = ctx.createLinearGradient(0, 0, 0, H/2); g.addColorStop(0, '#5ec8ff'); g.addColorStop(1, '#d4f3ff');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H/2 + 2);
-  const base = findSeg(G.d), pct = (G.d % SEG)/SEG, ps = findSeg(G.d + PLZ);
+  HY = H*.34;
+  const g = ctx.createLinearGradient(0, 0, 0, HY); g.addColorStop(0, '#5ec8ff'); g.addColorStop(1, '#d4f3ff');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, HY + 2);
+  const dm = G.d % trackLen;                         // pist döngüsü: konum her turda başa sarılır
+  const base = findSeg(dm), pct = (dm % SEG)/SEG, ps = findSeg(dm + PLZ);
   const off = (ps.i*.6 + G.x*40) % W;
   ctx.fillStyle = '#7fbf7a';
-  for(let i = -1; i < 4; i++){ const hx = i*W*.45 - off*.5; ctx.beginPath(); ctx.ellipse(hx, H/2 + 4, W*.3, H*.12, 0, Math.PI, 0); ctx.fill(); }
+  for(let i = -1; i < 4; i++){ const hx = i*W*.45 - off*.5; ctx.beginPath(); ctx.ellipse(hx, HY + 4, W*.3, H*.1, 0, Math.PI, 0); ctx.fill(); }
   ctx.fillStyle = '#5aa356';
-  for(let i = -1; i < 5; i++){ const hx = i*W*.33 - off; ctx.beginPath(); ctx.ellipse(hx, H/2 + 4, W*.2, H*.07, 0, Math.PI, 0); ctx.fill(); }
+  for(let i = -1; i < 5; i++){ const hx = i*W*.33 - off; ctx.beginPath(); ctx.ellipse(hx, HY + 4, W*.2, H*.06, 0, Math.PI, 0); ctx.fill(); }
   let maxy = H, x = 0, dx = -(base.curve*pct);
   const N = segs.length, camX = G.x*RW, drawn = [];
   for(let n = 0; n < DRAW; n++){
-    const s = segs[(base.i + n) % N], looped = s.i < base.i, cz = G.d - (looped ? trackLen : 0);
+    const s = segs[(base.i + n) % N], looped = s.i < base.i, cz = dm - (looped ? trackLen : 0);
     project(s.p1, camX - x, CAMH, cz); project(s.p2, camX - x - dx, CAMH, cz);
     x += dx; dx += s.curve;
     s.vis = false;
@@ -512,14 +560,15 @@ function render(t){
     const s = drawn[n];
     for(const o of s.sp) drawSprite(o, s.p1.s.x + s.p1.s.scale*o.x*RW*W/2, s.p1.s.y, s.p1.s.scale);
     for(const k of G.karts){
-      if(findSeg(k.d) !== s || k.d <= G.d + PLZ*.5) continue;
+      const rel = k.d - G.d;
+      if(findSeg(k.d) !== s || rel <= PLZ*.5 || rel > DRAW*SEG) continue;
       const kp = (k.d % SEG)/SEG, sc = s.p1.s.scale + (s.p2.s.scale - s.p1.s.scale)*kp;
       const kx = s.p1.s.x + (s.p2.s.x - s.p1.s.x)*kp + sc*k.x*RW*W/2, ky = s.p1.s.y + (s.p2.s.y - s.p1.s.y)*kp;
       drawKart(kx, ky, 700*sc*W/2, k.col, k.c, 0);
     }
   }
   const bounce = (Math.abs(G.x) > 1 ? Math.sin(t*40)*3 : 0) + (G.bump > 0 ? Math.sin(t*60)*6 : 0);
-  if(!(G.hit > 0 && Math.floor(G.hit*10) % 2)) drawKart(W/2, H - 18 + bounce, Math.min(W*.28, 300), '#ff4f7a', null, G.steerVis*.12);
+  if(!(G.hit > 0 && Math.floor(G.hit*10) % 2)) drawKart(W/2, H - 18 + bounce, Math.min(W*.28, 300), '#ff4f7a', null, G.steerVis*.2, G.steerVis);
 }
 const HC = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 function drawPreview(){
@@ -534,10 +583,10 @@ function drawPreview(){
   }
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.stroke();
 }
-const VCOL = {gaz:'#3ddc84', geri:'#ffb627', fren:'#ff4f7a', belirsiz:'#cfd8e3', 'boşta':'#cfd8e3', yok:'#cfd8e3'};
-const SNAME = {gaz:'GAZ', geri:'GERİ', fren:'FREN', 'boşta':'BOŞTA', yok:'ELLERİNİ GÖSTER', belirsiz:'?'};
+const VCOL = {gaz:'#3ddc84', geri:'#ffb627', fren:'#ff4f7a', yumruk:'#3ddc84', like:'#ff4f7a', dislike:'#ffb627', belirsiz:'#cfd8e3', 'boşta':'#cfd8e3', yok:'#cfd8e3'};
+const SNAME = {gaz:'GAZ', geri:'GERİ', fren:'FREN', 'boşta':'BOŞTA', yok:'ELLERİNİ GÖSTER', belirsiz:'?', yumruk:'yumruk', like:'like', dislike:'dislike'};
 function drawWheel(){
-  const r = Math.min(80, W*.09), cx = r + 24, cy = H - r - 24, a = CTL.hands.L && CTL.hands.R ? CTL.wheel : G.steerVis*.9;
+  const r = Math.min(80, W*.09), cx = r + 24, cy = H - r - 24, a = CTL.src !== '-' ? CTL.wheel : G.steerVis*.9;
   ctx.save(); ctx.translate(cx, cy); ctx.rotate(a);
   ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = r*.22; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
   ctx.strokeStyle = '#3a4a6e'; ctx.lineWidth = r*.12; ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.stroke();
@@ -548,12 +597,49 @@ function drawWheel(){
   const {state} = controls();
   outlined(SNAME[state] || state, cx, cy - r - 26, Math.min(30, W*.04), VCOL[state] || '#fff');
 }
+function nextCurve(){
+  const cur = Math.floor((G.d % trackLen)/SEG);
+  const win = Math.max(25, Math.min(90, Math.max(Math.abs(G.speed), MAXS*.4)*1.8/SEG));   // ~1,8 sn önceden
+  for(const c of CURVES){ const ahead = c.i - cur; if(ahead > 0 && ahead < win) return {...c, ahead, win}; }
+  return null;
+}
+function drawCurveArrow(t){
+  if(phase !== 'race' && phase !== 'count') return;
+  const c = nextCurve(); if(!c) return;
+  const near = 1 - c.ahead/c.win, a = .55 + .45*Math.abs(Math.sin(t*(4 + near*6))), s = Math.min(W, H)*(.07 + near*.05);
+  const cx = W/2, cy = H*.13 + 40;
+  ctx.globalAlpha = a; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const col = c.peak > 3 ? '#ff4f7a' : '#ffd23f';
+  const arrow = (w, c2) => { ctx.strokeStyle = c2; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(cx - c.dir*s*.9, cy + s*.4); ctx.quadraticCurveTo(cx - c.dir*s*.9, cy - s*.4, cx + c.dir*s*.4, cy - s*.4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx + c.dir*s*.1, cy - s*.85); ctx.lineTo(cx + c.dir*s*.6, cy - s*.4); ctx.lineTo(cx + c.dir*s*.1, cy + s*.05); ctx.stroke(); };
+  arrow(s*.42, '#1b2a4a'); arrow(s*.24, col);
+  ctx.globalAlpha = 1;
+  if(c.peak > 3) outlined('Keskin viraj!', cx, cy + s*1.05, Math.min(26, W*.035), '#ff8fa3');
+}
+const mapSize = () => Math.min(210, W*.24, H*.34);
+function drawMap(){
+  if(!MAP.length || !MAPB) return;
+  const S0 = mapSize(), x0 = W - S0 - 12, y0 = H - S0 - 12, pad = 14;
+  ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.beginPath(); ctx.roundRect(x0, y0, S0, S0, 16); ctx.fill();
+  const bw = MAPB.x1 - MAPB.x0 || 1, bh = MAPB.y1 - MAPB.y0 || 1, k = (S0 - pad*2)/Math.max(bw, bh);
+  const ox = x0 + (S0 - bw*k)/2, oy = y0 + (S0 - bh*k)/2;
+  const P = i => { const p = MAP[clamp(i, 0, MAP.length - 1)]; return [ox + (p[0] - MAPB.x0)*k, oy + (p[1] - MAPB.y0)*k]; };
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for(const [w, c] of [[9, '#1b2a4a'], [5, '#cfd8e3']]){ ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath(); MAP.forEach((_, i) => { const [a, b] = P(i); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.stroke(); }
+  const at = d => P(Math.floor(((d % trackLen) + trackLen) % trackLen/SEG/4));
+  const [sx, sy] = P(0); circle(sx, sy, 6, '#3ddc84');
+  const [fx, fy] = P(MAP.length - 1); rrect(fx - 6, fy - 6, 12, 12, 2, '#1b2a4a'); rrect(fx - 6, fy - 6, 6, 6, 0, '#fff'); rrect(fx, fy, 6, 6, 0, '#fff');
+  for(const kt of G.karts){ const [a, b] = at(kt.d); circle(a, b, 5, kt.col); }
+  const [px, py] = at(G.d); circle(px, py, 9, '#fff'); circle(px, py, 7, '#ff4f7a');
+  ctx.font = '700 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#1b2a4a';
+  ctx.fillText(`Tur ${G.lap + 1} · %${Math.round((G.d % trackLen)/trackLen*100)}`, x0 + 10, y0 + 6);
+}
 function drawPanel(){
   if(!DEV.panel) return;
-  const w = Math.min(560, W - 24), h = 200, x = W - w - 12, y = H - h - 12;
+  const w = Math.min(560, W - 24), h = 200, x = W - w - 12, y = Math.max(70, H - h - 24 - mapSize());
   ctx.fillStyle = 'rgba(10,16,32,.8)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
   ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
-  ctx.fillText(`Model: el işareti (${delegate}) · çıkarım ${CTL.fps.toFixed(0)} fps · direksiyon ${(CTL.wheel*180/Math.PI).toFixed(0)}° · karar ${SNAME[CTL.state]} · kalibrasyon ${CAL ? 'var' : 'yok'}`, x + 10, y + 8, w - 20);
+  ctx.fillText(`Model: el işareti (${delegate}) · çıkarım ${CTL.fps.toFixed(0)} fps · direksiyon ${(CTL.wheel*180/Math.PI).toFixed(0)}° (${CTL.src}) · karar ${SNAME[CTL.state]} · kalibrasyon ${CAL ? 'var' : 'yok'}`, x + 10, y + 8, w - 20);
   ['L', 'R'].forEach((side, i) => {
     const h0 = CTL.hands[side], cx = x + 10 + i*(w/2), cy = y + 34;
     ctx.fillStyle = '#ffd23f'; ctx.fillText(side === 'L' ? 'SOL EL' : 'SAĞ EL', cx, cy);
@@ -598,7 +684,7 @@ function loop(){
   if(phase === 'race'){ timeLeft -= dt; if(timeLeft <= 0){ timeLeft = 0; endRace(); } }
   if(segs.length) update(dt);
   if(segs.length) render(t); else { ctx.fillStyle = '#72d7ee'; ctx.fillRect(0, 0, W, H); }
-  if(phase !== 'menu'){ drawPreview(); if(phase !== 'calib') drawWheel(); drawPanel(); }
+  if(phase !== 'menu'){ drawPreview(); if(phase !== 'calib'){ drawWheel(); drawMap(); drawCurveArrow(t); } drawPanel(); }
   if(phase === 'calib') drawCalib();
   if(phase === 'count') outlined(String(Math.ceil(countT)), W/2, H*.35, Math.round(Math.min(W, H)*.25), '#ffd23f');
   $('hudL').textContent = `Altın: ${G.coins} · Sıra: ${place()}/${G.karts.length + 1}`;
@@ -611,7 +697,7 @@ function framing(){
   if(!camOK) return note2;
   if(!rec) return 'El algılayıcı yükleniyor…';
   if(!CTL.hands.L && !CTL.hands.R) return 'Ellerini direksiyonu tutar gibi kaldır';
-  if(!CTL.hands.L || !CTL.hands.R) return 'İki elin de görünsün';
+  if(!CTL.hands.L || !CTL.hands.R) return CTL.state === 'geri' || CTL.state === 'fren' ? '' : 'İki elin de görünsün';
   return '';
 }
 buildTrack(); G.karts = []; requestAnimationFrame(loop);
@@ -659,7 +745,7 @@ $('devRec').addEventListener('click', () => { DEV.rec = !DEV.rec; saveDev(); dev
 cv.addEventListener('pointerdown', () => { if(phase === 'calib' && CB.done) toMenu(); });
 devLabels(); calibNoteUpdate();
 $('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam); camLabels();
-globalThis.__YARIS = {CTL, CB, G, handFeatures, handVote, processHands, calibStart, get CAL(){ return CAL; }, set phase(v){ phase = v; }, get phase(){ return phase; }, raceReset, update, startRace};
+globalThis.__YARIS = {CTL, CB, G, handFeatures, handVote, processHands, calibStart, get CAL(){ return CAL; }, set phase(v){ phase = v; }, get phase(){ return phase; }, raceReset, update, startRace, get CURVES(){ return CURVES; }, get trackLen(){ return trackLen; }, nextCurve};
 }
 </script>
 </body>
