@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Köstebek Avı</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+/* Köstebek Avı — 2 sıra × 3 delik, yumruk tokmak
+   Vuruş: bileğin omza göre hızla aşağı inip bel hizasının üstünde durması (görüntü düzleminde)
+   Sıra: kol düz (dirsek açık, vuruş omuz hizasında biter) → ileri sıra; dirsek kırık (bel hizasına iner) → yakın sıra
+   Sütun: vuruşun bittiği yerin vücut ortasına göre yatay konumu */
+:root{--ink:#1b2a4a;--accent:#ff4f7a;--sun:#ffd23f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#5cb85c;font-family:'Baloo 2',system-ui,sans-serif;color:var(--ink)}
+canvas#game{position:fixed;inset:0;width:100%;height:100%;display:block}
+video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+.hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
+.hud[hidden],.screen[hidden]{display:none}
+.pill{background:#fff;border-radius:999px;padding:4px 18px;font-size:clamp(18px,2.6vw,30px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud .btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:8px 18px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
+.screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(30,60,30,.45);padding:16px;overflow:auto}
+.card{background:#fff;border-radius:28px;padding:clamp(18px,3.5vw,36px);max-width:660px;width:100%;text-align:center;box-shadow:0 10px 0 rgba(0,0,0,.2)}
+h1{margin:0 0 4px;font-size:clamp(34px,6vw,56px);line-height:1.05;color:var(--accent)}
+p{margin:6px 0 12px;font-size:18px}
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin:12px 0;text-align:left}
+.rule{border:3px solid #e3edf7;border-radius:14px;padding:8px 10px;background:#f6fbff}
+.rule b{display:block;font-size:19px}.rule span{font-size:14px}
+.go{border:0;border-radius:999px;background:var(--accent);color:#fff;font:inherit;font-size:24px;font-weight:800;padding:8px 36px;margin:6px;cursor:pointer;box-shadow:0 6px 0 #c42a52;min-height:44px}
+.go.alt{background:#4d6bff;box-shadow:0 6px 0 #2f47c2}
+.go:active{transform:translateY(4px);box-shadow:none}
+.go:disabled{opacity:.6;cursor:wait}
+.opts{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
+.chip{border:2px solid #e3edf7;border-radius:999px;background:#f6fbff;color:var(--ink);font:inherit;font-size:15px;font-weight:700;padding:6px 14px;min-height:44px;cursor:pointer}
+.chip[aria-pressed=true]{border-color:#4d6bff;background:#eef1ff}
+.note{font-size:14px;opacity:.75;margin:10px 0 0}.note a{color:var(--ink)}
+button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<video id="cam" playsinline muted></video>
+
+<div class="hud" id="hud" hidden>
+  <div class="pill" id="hudL">Puan: 0</div>
+  <div class="btns"><button id="toMenu" type="button">Menü</button><button id="camHud" type="button">Kamera</button></div>
+  <div class="pill" id="hudR">60</div>
+</div>
+
+<div class="screen" id="menu">
+  <div class="card">
+    <h1>Köstebek Avı</h1>
+    <p>Yumruğun tokmak! Elini kaldır, köstebeğin üstüne hızla indir.</p>
+    <div class="rules">
+      <div class="rule"><b>İleri delikler</b><span>Kolun dümdüz, ileri doğru vur</span></div>
+      <div class="rule"><b>Yakın delikler</b><span>Dirseğin kırık, önüne doğru vur</span></div>
+      <div class="rule"><b>Orta / yanlar</b><span>Vücudunun ortasına ya da sağına soluna vur</span></div>
+    </div>
+    <p style="font-size:16px">Altın kasklı köstebek 3 puan. Kirpiye vurma, puan kaybedersin!</p>
+    <button class="go" id="play">Oyna</button>
+    <button class="go alt" id="calib">Kalibrasyon</button>
+    <p class="note" id="calibNote"></p>
+    <div class="opts"><button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button><button class="chip" id="devModel"></button></div>
+    <p class="note">Kameraya 2–3 metre uzak dur, kolların ve kalçan görünsün. Görüntü cihazdan çıkmaz. Klavye: Q W E ileri, A S D yakın delikler. <a href="oyunlar.html">Diğer oyunlar</a></p>
+  </div>
+</div>
+
+<div class="screen" id="over" hidden>
+  <div class="card">
+    <h1>Süre doldu!</h1>
+    <p id="result"></p>
+    <button class="go" id="again">Tekrar oyna</button>
+    <button class="go alt" id="back">Menü</button>
+  </div>
+</div>
+
+<script type="module">
+import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+{
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODELS = {lite:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", full:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"};
+const ROUND = 60;
+const $ = id => document.getElementById(id);
+const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
+let W = 0, H = 0;
+function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W*d; cv.height = H*d; ctx.setTransform(d,0,0,d,0,0); }
+addEventListener('resize', resize); resize();
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const median = a => { if(!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+const DEV = {panel:false, model:'full'};
+try { Object.assign(DEV, JSON.parse(localStorage.getItem('kosDev') || '{}')); } catch(e){}
+const saveDev = () => { try { localStorage.setItem('kosDev', JSON.stringify(DEV)); } catch(e){} };
+
+/* ================= SES ================= */
+let ac = null;
+function sfx(f1, f2, dur, type = 'triangle', vol = .2){
+  if(!ac) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur + .02);
+}
+
+/* ================= KAMERA + MODEL ================= */
+let pose = null, loadedModel = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '', delegate = '-';
+let camFacing = 'user';
+try { camFacing = localStorage.getItem('kameraYonu') || 'user'; } catch(e){}
+async function initCam(){
+  if(video.srcObject){ video.srcObject.getTracks().forEach(tr => tr.stop()); video.srcObject = null; }
+  const base = {width:{ideal:640}, height:{ideal:480}};
+  let s;
+  try { s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:{exact:camFacing}}, audio:false}); }
+  catch(e){ s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:camFacing}, audio:false}); }
+  video.srcObject = s; await video.play(); camOK = true; lastVT = -1;
+}
+function camLabels(){ for(const id of ['camBtn', 'camHud']) $(id).textContent = 'Kamera: ' + (camFacing === 'user' ? 'Ön' : 'Arka'); }
+async function switchCam(){
+  camFacing = camFacing === 'user' ? 'environment' : 'user';
+  try { localStorage.setItem('kameraYonu', camFacing); } catch(e){}
+  camLabels();
+  if(camOK){ try { await initCam(); } catch(e){ camFacing = camFacing === 'user' ? 'environment' : 'user'; camLabels(); try { await initCam(); } catch(e2){} } }
+  resetBody();
+}
+async function initModel(){
+  if(pose){ try { pose.close(); } catch(e){} pose = null; }
+  const fs = await FilesetResolver.forVisionTasks(WASM);
+  const opts = d => ({baseOptions:{modelAssetPath:MODELS[DEV.model] || MODELS.lite, delegate:d}, runningMode:'VIDEO', numPoses:2,
+    minPoseDetectionConfidence:.5, minPosePresenceConfidence:.5, minTrackingConfidence:.5});
+  try { pose = await PoseLandmarker.createFromOptions(fs, opts('GPU')); delegate = 'GPU'; }
+  catch(e){ pose = await PoseLandmarker.createFromOptions(fs, opts('CPU')); delegate = 'CPU'; }
+  loadedModel = DEV.model;
+}
+
+/* ================= VURUŞ ALGILAMA ================= */
+const sub = (a, b) => ({x:a.x - b.x, y:a.y - b.y, z:(a.z || 0) - (b.z || 0)});
+const len = v => Math.hypot(v.x, v.y, v.z || 0);
+function elbowAngle(S, E, Wr){ const a = sub(S, E), b = sub(Wr, E); return Math.acos(clamp((a.x*b.x + a.y*b.y + a.z*b.z)/((len(a)*len(b)) || 1), -1, 1))*180/Math.PI; }
+/* Kalibrasyon: ileri ve yakın vuruşlarda ölçülen dirsek açısı ve bitiş yüksekliği */
+let CAL = null;
+try { CAL = JSON.parse(localStorage.getItem('kosCal') || 'null'); } catch(e){}
+const DEFCAL = {far:{ang:165, drop:.3}, near:{ang:110, drop:.75}};
+/* sıra kararı: iki ölçümün ortak oyu, -1 yakın … +1 ileri */
+function rowScore(ang, drop){
+  const c = CAL || DEFCAL;
+  const sa = clamp((ang - (c.far.ang + c.near.ang)/2)/(Math.abs(c.far.ang - c.near.ang)/2 || 20), -1.5, 1.5);
+  const sd = clamp(((c.far.drop + c.near.drop)/2 - drop)/(Math.abs(c.near.drop - c.far.drop)/2 || .2), -1.5, 1.5);
+  return .5*sa + .5*sd;
+}
+const COLTH = .27;   // omuz genişliği cinsinden: ortadan bu kadar uzak → yan delik (orta vuruş ≈0, yan vuruş ≈0,5)
+const BODY = {lock:null, ok:false, hipOK:false, lm:null, persons:0, fps:0, fpsN:0, fpsT:0, lastT:0, T:.3, sw:.15, cx:0,
+  arms:{L:null, R:null}, events:[], log:[]};
+function newArm(){ return {st:'idle', hist:[], peak:0, t0:0, cool:0, armed:true, vis:false, seen:-9, y0:0, vy:0, aimX:0, raised:false, last:null}; }
+BODY.arms.L = newArm(); BODY.arms.R = newArm();
+function resetBody(){ BODY.lock = null; BODY.arms.L = newArm(); BODY.arms.R = newArm(); }
+function pick(arr){
+  if(!arr.length) return -1;
+  let best = -1, bs = Infinity;
+  arr.forEach((l, i) => {
+    const cx = (l[11].x + l[12].x)/2, s = Math.hypot(l[11].x - l[12].x, l[11].y - l[12].y);
+    const sc = BODY.lock ? Math.abs(cx - BODY.lock.x) + Math.abs(s - BODY.lock.s)*2 : -s;
+    if(sc < bs){ bs = sc; best = i; }
+  });
+  const l = arr[best]; BODY.lock = {x:(l[11].x + l[12].x)/2, s:Math.hypot(l[11].x - l[12].x, l[11].y - l[12].y)};
+  return best;
+}
+function processPose(res, t){
+  BODY.fpsN++; if(t - BODY.fpsT >= 1){ BODY.fps = BODY.fpsN/(t - BODY.fpsT); BODY.fpsN = 0; BODY.fpsT = t; }
+  BODY.lastT = t;
+  asp = (video.videoWidth || 640)/(video.videoHeight || 480);
+  const arr = res.landmarks || [], idx = pick(arr);
+  BODY.persons = arr.length;
+  if(idx < 0){ BODY.ok = false; BODY.lm = null; return; }
+  const l = arr[idx], w = (res.worldLandmarks || [])[idx];
+  const P = l.map(p => ({x:(1 - p.x)*asp, y:p.y, v:p.visibility ?? 1}));
+  BODY.lm = P;
+  BODY.ok = P[11].v > .5 && P[12].v > .5;
+  if(!BODY.ok) return;
+  BODY.hipOK = P[23].v > .4 && P[24].v > .4;
+  const sm = {x:(P[11].x + P[12].x)/2, y:(P[11].y + P[12].y)/2};
+  const sw = Math.hypot(P[11].x - P[12].x, P[11].y - P[12].y);
+  BODY.sw += (sw - BODY.sw)*.1;
+  const hy = BODY.hipOK ? (P[23].y + P[24].y)/2 : sm.y + BODY.sw*1.5;
+  BODY.T += ((hy - sm.y) - BODY.T)*.1;               // gövde boyu: bütün ölçüler buna göre
+  BODY.cx = sm.x; BODY.sy = sm.y; BODY.hy = hy;
+  const T = BODY.T;
+  const leftIs11 = P[11].x < P[12].x;
+  for(const [side, sh, el, wr] of leftIs11 ? [['L',11,13,15],['R',12,14,16]] : [['L',12,14,16],['R',11,13,15]]){
+    const A = BODY.arms[side];
+    if(P[wr].v < .35){ if(t - A.seen > .15){ A.hist.length = 0; A.st = 'idle'; } A.vis = false; continue; }
+    A.vis = true; A.seen = t;
+    const ry = (P[wr].y - P[sh].y)/T;                // bileğin omza göre yüksekliği (aşağı artı, gövde boyu cinsinden)
+    const rx = (P[wr].x - sm.x)/BODY.sw;             // vücut ortasına göre yatay (omuz genişliği cinsinden)
+    const ang = w ? elbowAngle(w[sh], w[el], w[wr]) : elbowAngle(P[sh], P[el], P[wr]);
+    A.hist.push({t, ry, rx, ang}); if(A.hist.length > 10) A.hist.shift();
+    A.raised = ry < .25; A.aimX = rx; A.ang = ang; A.ry = ry;
+    if(A.hist.length < 3) continue;
+    const c = A.hist[A.hist.length - 1], o = A.hist[A.hist.length - 3], dtw = Math.max(.02, c.t - o.t);
+    const vy = (c.ry - o.ry)/dtw; A.vy = vy;
+    if(!A.armed && ry < A.endY - .25) A.armed = true;          // yeni vuruş için el tekrar kalkmalı
+    if(A.st === 'idle'){
+      if(A.armed && t > A.cool && vy > 2.2 && o.ry < .35){
+        let top = o; for(const h of A.hist) if(t - h.t < .3 && h.ry < top.ry) top = h;
+        A.st = 'down'; A.peak = vy; A.t0 = t; A.y0 = top.ry; A.frames = 1;
+      }
+    } else {
+      A.peak = Math.max(A.peak, vy); A.frames++;
+      // çarpma anı: aşağı hız birden düştü
+      if(vy < A.peak*.3 || t - A.t0 > .55){
+        A.st = 'idle'; A.cool = t + .15;
+        const endY = c.ry, drop = endY - A.y0, hipRel = (BODY.hy - BODY.sy)/T;
+        A.endY = endY;
+        const why = drop < .45 ? 'kısa vuruş' : A.peak < 2.8 ? 'yavaş' : endY > hipRel - .12 ? 'kol aşağı indi (dinlenme)' : endY < -.12 ? 'baş üstünde durdu' : '';
+        if(!why){
+          // vuruş anındaki değerler: son iki karenin ortalaması
+          const angI = (c.ang + A.hist[A.hist.length - 2].ang)/2;
+          const ev = {side, t, ang:angI, drop:endY, rx:c.rx, peak:A.peak, rs:rowScore(angI, endY)};
+          BODY.events.push(ev); A.armed = false; A.last = ev;
+        } else BODY.log.push({t, why});
+      }
+    }
+  }
+  if(BODY.log.length > 6) BODY.log.splice(0, BODY.log.length - 6);
+}
+function detect(){
+  if(!pose || !camOK || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const ts = performance.now();
+  pose.detectForVideo(video, ts, res => processPose(res, ts/1000));
+}
+/* olay → delik: sıra 0 ileri, 1 yakın; sütun 0 sol, 1 orta, 2 sağ */
+const holeOf = ev => ({row:ev.rs >= 0 ? 0 : 1, col:ev.rx < -COLTH ? 0 : ev.rx > COLTH ? 2 : 1});
+const keys = {};
+addEventListener('keydown', e => {
+  const k = {KeyQ:[0,0], KeyW:[0,1], KeyE:[0,2], KeyA:[1,0], KeyS:[1,1], KeyD:[1,2]}[e.code];
+  if(k && !keys[e.code]) BODY.events.push({side:'K', t:performance.now()/1000, kb:k, rs:k[0] === 0 ? 1 : -1, rx:(k[1] - 1)*.8, ang:0, drop:0, peak:0});
+  if(e.code === 'KeyP'){ DEV.panel = !DEV.panel; saveDev(); devLabels(); }
+  keys[e.code] = true;
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+/* ================= OYUN ================= */
+let phase = 'menu', timeLeft = ROUND, countT = 0;
+const HOLES = [];
+for(let r = 0; r < 2; r++) for(let c = 0; c < 3; c++) HOLES.push({row:r, col:c, who:null, up:0, t:0, life:0, hit:0, stars:0});
+const G = {score:0, hits:0, missed:0, oops:0, whiffs:0, spawn:1, swings:[], parts:[], texts:[], combo:0};
+function resetGame(){
+  Object.assign(G, {score:0, hits:0, missed:0, oops:0, whiffs:0, spawn:1, swings:[], parts:[], texts:[], combo:0});
+  for(const h of HOLES){ h.who = null; h.up = 0; h.hit = 0; }
+  BODY.events.length = 0;
+}
+function holePos(h){
+  const far = h.row === 0, s = far ? .72 : 1;
+  const span = Math.min(W*.27, H*.42)*s;
+  return {x:W/2 + (h.col - 1)*span*1.05, y:H*(far ? .43 : .72), r:Math.min(W*.1, H*.13)*s, s};
+}
+function spawnMole(){
+  const free = HOLES.filter(h => !h.who);
+  if(!free.length) return;
+  const h = free[Math.random()*free.length | 0], prog = (ROUND - timeLeft)/ROUND, r = Math.random();
+  h.who = r < .12 ? 'kirpi' : r < .24 ? 'altin' : 'kostebek';
+  h.t = 0; h.life = (1.7 - prog*.6)*(h.who === 'kirpi' ? 1.2 : 1); h.hit = 0; h.up = 0;
+}
+function burst(x, y, col, n){ for(let i = 0; i < n; i++){ const a = Math.random()*6.28, v = 100 + Math.random()*260; G.parts.push({x, y, vx:Math.cos(a)*v, vy:Math.sin(a)*v - 150, life:.8, c:col}); } }
+function handleSwing(ev){
+  const hc = ev.kb ? {row:ev.kb[0], col:ev.kb[1]} : holeOf(ev);
+  const h = HOLES.find(x => x.row === hc.row && x.col === hc.col), P = holePos(h);
+  G.swings.push({h, t:.25, side:ev.side});
+  if(h.who && h.up > .35 && !h.hit){
+    h.hit = 1;
+    if(h.who === 'kirpi'){ G.score = Math.max(0, G.score - 2); G.oops++; G.combo = 0; G.texts.push({x:P.x, y:P.y - P.r*1.6, t:'Ah! Kirpi −2', c:'#ff8fa3', life:1}); sfx(300, 120, .3, 'sawtooth', .12); }
+    else { const pts = h.who === 'altin' ? 3 : 1; G.score += pts; G.hits++; G.combo++; G.texts.push({x:P.x, y:P.y - P.r*1.6, t:'+' + pts, c:h.who === 'altin' ? '#ffd23f' : '#fff', life:.9}); burst(P.x, P.y - P.r*.6, '#ffd23f', 14); sfx(700, 200, .15, 'square', .15); }
+  } else { G.whiffs++; sfx(220, 160, .08, 'sine', .1); burst(P.x, P.y, '#8d5a2b', 6); }
+}
+function update(dt){
+  const evs = BODY.events.splice(0);
+  if(phase === 'calib'){ for(const e of evs) calibSwing(e); }
+  else if(phase === 'play'){
+    for(const e of evs) handleSwing(e);
+    G.spawn -= dt;
+    const prog = (ROUND - timeLeft)/ROUND;
+    if(G.spawn <= 0){ spawnMole(); if(prog > .5 && Math.random() < .3) spawnMole(); G.spawn = 1.1 - prog*.4 + Math.random()*.4; }
+  }
+  for(const h of HOLES){
+    if(!h.who) continue;
+    h.t += dt;
+    if(h.hit){ h.hit += dt; h.up = Math.max(0, h.up - dt*5); if(h.hit > .6){ h.who = null; } continue; }
+    h.up = h.t < .2 ? h.t/.2 : h.t > h.life - .2 ? Math.max(0, (h.life - h.t)/.2) : 1;
+    if(h.t >= h.life){ if(h.who !== 'kirpi'){ G.missed++; G.combo = 0; } h.who = null; }
+  }
+  for(const s of G.swings) s.t -= dt;
+  G.swings = G.swings.filter(s => s.t > 0);
+  for(const p of G.parts){ p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 800*dt; p.life -= dt; }
+  G.parts = G.parts.filter(p => p.life > 0);
+  for(const x of G.texts){ x.y -= 45*dt; x.life -= dt; }
+  G.texts = G.texts.filter(x => x.life > 0);
+}
+
+/* ================= KALİBRASYON ================= */
+const CSTEP = [{k:'far', t:'Kolun DÜMDÜZ, ileriye 3 kez vur', n:3}, {k:'near', t:'Dirseğin KIRIK, önüne 3 kez vur', n:3}];
+const CB = {step:0, vals:{far:[], near:[]}, done:false, msg:''};
+function calibStart(){ CB.step = 0; CB.vals = {far:[], near:[]}; CB.done = false; CB.msg = ''; phase = 'calib'; }
+function calibSwing(e){
+  if(CB.done || e.kb) return;
+  const st = CSTEP[CB.step];
+  CB.vals[st.k].push(e); sfx(600, 900, .12);
+  if(CB.vals[st.k].length >= st.n){
+    CB.step++;
+    if(CB.step >= CSTEP.length){
+      const m = k => ({ang:median(CB.vals[k].map(v => v.ang)), drop:median(CB.vals[k].map(v => v.drop))});
+      const c = {far:m('far'), near:m('near')};
+      const dA = c.far.ang - c.near.ang, dD = c.near.drop - c.far.drop;
+      CB.done = true;
+      if(dA > 15 || dD > .15){
+        CAL = c; try { localStorage.setItem('kosCal', JSON.stringify(CAL)); } catch(e2){}
+        CB.msg = `Kaydedildi. Dirsek farkı ${dA.toFixed(0)}° ${dA > 30 ? '(iyi)' : '(yeterli)'}, yükseklik farkı ${dD.toFixed(2)} ${dD > .25 ? '(iyi)' : '(yeterli)'}`;
+      } else CB.msg = 'İki vuruş türü birbirine çok benzedi, kaydedilmedi. İleride kolunu tam düzelt, yakında dirseğini iyice kır.';
+      calibNoteUpdate();
+    }
+  }
+}
+
+/* ================= ÇİZİM ================= */
+function circle(x, y, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+function ell(x, y, rx, ry, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 7); ctx.fill(); }
+function rrect(x, y, w, h, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+function outlined(t, x, y, size, fill){
+  ctx.font = `800 ${size}px "Baloo 2",sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size/7); ctx.strokeStyle = '#1b2a4a'; ctx.strokeText(t, x, y);
+  ctx.fillStyle = fill; ctx.fillText(t, x, y);
+}
+function drawMole(h, P){
+  const r = P.r*.62, rise = h.up*r*1.9, x = P.x, y = P.y - rise + r*.6;
+  ctx.save(); ctx.beginPath(); ctx.rect(x - P.r*1.3, P.y - P.r*4, P.r*2.6, P.r*4); ctx.clip();
+  if(h.who === 'kirpi'){
+    ctx.fillStyle = '#5a3a22'; ctx.beginPath();
+    for(let i = 0; i <= 14; i++){ const a = Math.PI + i/14*Math.PI, rr = i % 2 ? r*1.05 : r*1.35; ctx.lineTo(x + Math.cos(a)*rr, y + Math.sin(a)*rr); }
+    ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.fill();
+    ell(x, y + r*.15, r*.62, r*.55, '#f2c99a'); circle(x, y + r*.3, r*.12, '#1b2a4a');
+  } else {
+    ell(x, y + r*.3, r*.95, r*1.1, '#8d6748');
+    ell(x, y + r*.55, r*.55, r*.5, '#d9b48f');
+    circle(x, y + r*.25, r*.17, '#ff8fa3');
+    for(const s of [-1, 1]){ rrect(x + s*r*.08 - r*.07, y + r*.4, r*.14, r*.2, 2, '#fff'); }
+    if(h.who === 'altin'){ ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.ellipse(x, y - r*.55, r*.95, r*.6, 0, Math.PI, 0); ctx.fill(); rrect(x - r, y - r*.6, r*2, r*.16, 4, '#e6b422'); }
+  }
+  const dizzy = h.hit > 0;
+  for(const s of [-1, 1]){
+    if(dizzy){ ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(2, r*.07); ctx.beginPath(); ctx.moveTo(x + s*r*.38 - r*.1, y - r*.2); ctx.lineTo(x + s*r*.38 + r*.1, y); ctx.moveTo(x + s*r*.38 + r*.1, y - r*.2); ctx.lineTo(x + s*r*.38 - r*.1, y); ctx.stroke(); }
+    else { circle(x + s*r*.38, y - r*.1, r*.15, '#fff'); circle(x + s*r*.38, y - r*.08, r*.08, '#1b2a4a'); }
+  }
+  ctx.restore();
+  if(dizzy) for(let i = 0; i < 3; i++){ const a = performance.now()/200 + i*2.1; outlined('★', x + Math.cos(a)*r, y - r*1.1 + Math.sin(a)*r*.3, r*.4, '#ffd23f'); }
+}
+function drawHammer(x, y, s, down){
+  ctx.save(); ctx.translate(x, y); ctx.rotate(down ? .9 : -.25);
+  rrect(-s*.07, -s*.1, s*.14, s*.95, s*.05, '#8d5a2b');
+  rrect(-s*.42, -s*.32, s*.84, s*.36, s*.12, '#e8382d');
+  rrect(-s*.42, -s*.32, s*.18, s*.36, s*.08, '#c42a52'); rrect(s*.24, -s*.32, s*.18, s*.36, s*.08, '#c42a52');
+  ctx.restore();
+}
+function aimHole(A){
+  if(!A || !A.vis || !A.raised) return null;
+  return A.aimX < -COLTH ? 0 : A.aimX > COLTH ? 2 : 1;
+}
+function render(t){
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#8ed6ff'); g.addColorStop(.25, '#c9f0ff'); g.addColorStop(.26, '#7ccf6a'); g.addColorStop(1, '#4fa847');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for(let i = 0; i < 8; i++){ circle(W*(i/7), H*.26, W*.07, '#5cb85c'); }
+  // nişan alınan sütun (el kalkıkken)
+  const aims = [aimHole(BODY.arms.L), aimHole(BODY.arms.R)];
+  for(const h of HOLES){
+    const P = holePos(h);
+    if(aims.includes(h.col) && (phase === 'play' || phase === 'calib')){ ctx.fillStyle = 'rgba(255,210,63,.35)'; ctx.beginPath(); ctx.ellipse(P.x, P.y, P.r*1.35, P.r*.55, 0, 0, 7); ctx.fill(); }
+    ell(P.x, P.y + P.r*.08, P.r*1.15, P.r*.45, '#6d4527');
+    ell(P.x, P.y, P.r, P.r*.36, '#2b1a0e');
+  }
+  for(const h of HOLES) if(h.who) drawMole(h, holePos(h));
+  for(const h of HOLES){ const P = holePos(h); ctx.fillStyle = '#7ccf6a'; ctx.beginPath(); ctx.ellipse(P.x, P.y + P.r*.2, P.r*1.2, P.r*.25, 0, 0, Math.PI); ctx.fill(); }
+  for(const s of G.swings){ const P = holePos(s.h); drawHammer(P.x + P.r*.5, P.y - P.r*1.2, P.r*1.3, s.t < .18); }
+  for(const p of G.parts){ ctx.globalAlpha = Math.max(0, p.life/.8); circle(p.x, p.y, 5, p.c); }
+  ctx.globalAlpha = 1;
+  for(const x of G.texts){ ctx.globalAlpha = Math.min(1, x.life*2); outlined(x.t, x.x, x.y, 34, x.c); }
+  ctx.globalAlpha = 1;
+  if(phase === 'play' || phase === 'count'){
+    outlined('İLERİ: kol düz', W*.12, H*.43, Math.min(20, W*.026), '#fff');
+    outlined('YAKIN: dirsek kırık', W*.12, H*.72, Math.min(20, W*.026), '#fff');
+  }
+}
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24]];
+function drawPreview(){
+  if(!camOK || video.readyState < 2) return;
+  const pw = Math.min(190, W*.22), ph = pw/asp, px = W - pw - 12, py = 66;
+  ctx.save(); ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.clip();
+  ctx.translate(px + pw, py); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph); ctx.restore();
+  if(BODY.lm){ ctx.strokeStyle = '#3ddc84'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    for(const [a, b] of BONES) if(BODY.lm[a].v > .4 && BODY.lm[b].v > .4){ ctx.beginPath(); ctx.moveTo(px + BODY.lm[a].x/asp*pw, py + BODY.lm[a].y*ph); ctx.lineTo(px + BODY.lm[b].x/asp*pw, py + BODY.lm[b].y*ph); ctx.stroke(); } }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.stroke();
+}
+function drawPanel(){
+  if(!DEV.panel) return;
+  const w = Math.min(470, W - 24), h = 150, x = 12, y = H - h - 12;
+  ctx.fillStyle = 'rgba(10,16,32,.82)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
+  ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
+  const A = BODY.arms, c = CAL || DEFCAL;
+  const arm = (n, a) => a.vis ? `${n}: yükseklik ${(a.ry ?? 0).toFixed(2)} · dirsek ${(a.ang ?? 0).toFixed(0)}° · aşağı hız ${(a.vy ?? 0).toFixed(1)} ${a.st === 'down' ? 'VURUŞ' : ''}` : `${n}: görünmüyor`;
+  const L = [
+    `Vücut modeli ${loadedModel || '-'} (${delegate}) · ${BODY.fps.toFixed(0)} fps · kişi ${BODY.persons} · kalibrasyon ${CAL ? 'var' : 'yok'} (ileri ${c.far.ang.toFixed(0)}°/${c.far.drop.toFixed(2)}, yakın ${c.near.ang.toFixed(0)}°/${c.near.drop.toFixed(2)})`,
+    arm('sol kol', A.L), arm('sağ kol', A.R),
+    (() => { const e = A.L.last && (!A.R.last || A.L.last.t > A.R.last.t) ? A.L.last : A.R.last; if(!e) return 'son vuruş: —'; const hh = holeOf(e); return `son vuruş: dirsek ${e.ang.toFixed(0)}° · bitiş ${e.drop.toFixed(2)} · sıra oyu ${e.rs.toFixed(2)} → ${hh.row ? 'yakın' : 'ileri'} · yatay ${e.rx.toFixed(2)} → ${['sol', 'orta', 'sağ'][hh.col]}`; })(),
+    `reddedilen: ${BODY.log.slice(-3).map(l => l.why).join(', ') || '—'}`
+  ];
+  L.forEach((s, i) => ctx.fillText(s, x + 10, y + 10 + i*26, w - 20));
+}
+function drawCalib(){
+  ctx.fillStyle = 'rgba(20,40,20,.55)'; ctx.fillRect(0, 0, W, H);
+  if(CB.done){ outlined(CB.msg, W/2, H*.4, Math.min(24, W*.032), '#ffd23f'); outlined('Menüye dönmek için ekrana dokun', W/2, H*.7, Math.min(24, W*.035), '#fff'); return; }
+  const st = CSTEP[CB.step], row = st.k === 'far' ? 0 : 1;
+  for(const h of HOLES) if(h.row === row && h.col === 1){ const P = holePos(h); ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 6; ctx.beginPath(); ctx.ellipse(P.x, P.y, P.r*1.4, P.r*.6, 0, 0, 7); ctx.stroke(); }
+  outlined(st.t, W/2, H*.15 + 30, Math.min(40, W*.05), '#fff');
+  outlined(`${CB.vals[st.k].length} / ${st.n}`, W/2, H*.15 + 80, Math.min(36, W*.05), '#ffd23f');
+  if(!BODY.ok && camOK) outlined('Kameranın önüne geç, kolların görünsün', W/2, H*.9, Math.min(24, W*.035), '#ff8fa3');
+}
+
+/* ================= DÖNGÜ ================= */
+let last = performance.now();
+function loop(){
+  const now = performance.now(), dt = Math.min(.05, (now - last)/1000), t = now/1000; last = now;
+  detect();
+  if(phase === 'count'){ countT -= dt; if(countT <= 0){ phase = 'play'; sfx(400, 900, .25, 'square', .12); } }
+  if(phase === 'play'){ timeLeft -= dt; if(timeLeft <= 0){ timeLeft = 0; endGame(); } }
+  if(phase !== 'menu' && phase !== 'end') update(dt);
+  render(t);
+  if(phase !== 'menu'){ drawPreview(); drawPanel(); }
+  if(phase === 'calib') drawCalib();
+  if(phase === 'count') outlined(String(Math.ceil(countT)), W/2, H*.3, Math.round(Math.min(W, H)*.22), '#ffd23f');
+  if((phase === 'play' || phase === 'count') && camOK && !BODY.ok) outlined('Kameranın önüne geç, kolların görünsün', W/2, H*.12 + 30, Math.min(26, W*.035), '#ff8fa3');
+  else if((phase === 'play' || phase === 'count') && camOK && !BODY.hipOK) outlined('Biraz geri git, belin de görünsün', W/2, H*.12 + 30, Math.min(26, W*.035), '#ff8fa3');
+  if((phase === 'play' || phase === 'count') && !camOK && note2) outlined(note2, W/2, H*.12 + 30, Math.min(22, W*.03), '#fff');
+  $('hudL').textContent = `Puan: ${G.score} · Kombo ${G.combo}`;
+  $('hudR').textContent = `${Math.ceil(timeLeft)}`;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ================= MENÜ ================= */
+async function prepare(){
+  const b = [$('play'), $('calib')]; b.forEach(x => x.disabled = true);
+  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
+  if(!camOK){ try { await initCam(); } catch(e){ note2 = 'Kamera açılamadı, klavyeyle oynayabilirsin (Q W E / A S D)'; } }
+  if(camOK && (!pose || loadedModel !== DEV.model)){ try { await initModel(); } catch(e){ camOK = false; note2 = 'Hareket algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; } }
+  b.forEach(x => x.disabled = false);
+}
+async function startGame(){
+  await prepare(); resetGame();
+  timeLeft = ROUND; countT = 3; phase = 'count';
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
+}
+async function startCalib(){
+  await prepare(); resetGame(); calibStart();
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = true;
+}
+function endGame(){
+  phase = 'end'; $('hud').hidden = true; $('over').hidden = false;
+  $('result').textContent = `${G.score} puan! ${G.hits} köstebek vurdun, ${G.missed} tanesi kaçtı, ${G.oops} kez kirpiye vurdun.`;
+  $('again').focus();
+}
+function toMenu(){ phase = 'menu'; $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; calibNoteUpdate(); }
+function calibNoteUpdate(){ $('calibNote').textContent = CAL ? 'Kalibrasyon kayıtlı. Başka çocuk oynayacaksa tekrar yap.' : 'İlk oyundan önce kalibrasyon yapmanı öneririm: 3 ileri, 3 yakın vuruş.'; }
+function devLabels(){
+  $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel);
+  $('devModel').textContent = 'Model: ' + (DEV.model === 'full' ? 'Full (hassas)' : 'Lite (hızlı)'); $('devModel').setAttribute('aria-pressed', DEV.model === 'full');
+}
+$('play').addEventListener('click', startGame);
+$('calib').addEventListener('click', startCalib);
+$('again').addEventListener('click', startGame);
+$('back').addEventListener('click', toMenu);
+$('toMenu').addEventListener('click', toMenu);
+$('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam);
+$('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(); devLabels(); });
+$('devModel').addEventListener('click', () => { DEV.model = DEV.model === 'full' ? 'lite' : 'full'; saveDev(); devLabels(); });
+cv.addEventListener('pointerdown', () => { if(phase === 'calib' && CB.done) toMenu(); });
+devLabels(); camLabels(); calibNoteUpdate();
+globalThis.__KOS = {BODY, G, HOLES, holeOf, rowScore, startGame, startCalib, CB, get CAL(){ return CAL; }, get phase(){ return phase; }};
+}
+</script>
+</body>
+</html>
