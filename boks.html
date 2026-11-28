@@ -10,7 +10,7 @@
    Konum: omuzların ekrandaki yatay yeri → karakter sağa sola geçer
    Yumruk: bileğin omza göre 3D hızı (dünya koordinatları, kalça merkezli → yürümek yumruk sayılmaz)
    + kol uzaması şartı; güç = tepe hız / kişinin en güçlü yumruğu
-   Hasar: 15 zayıf, 10 orta, 5 güçlü, 3 çok güçlü yumruk bir bloğu kırar; aradaki güçler orantılı */
+   Hasar: 1 güçlü ya da 2 zayıf yumruk bir bloğu kırar; aradaki güçler orantılı */
 :root{--ink:#1b2a4a;--accent:#ff4f7a;--sun:#ffd23f}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:#2a3550;font-family:'Baloo 2',system-ui,sans-serif;color:var(--ink)}
@@ -25,7 +25,7 @@ video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
 .card{background:#fff;border-radius:28px;padding:clamp(18px,3.5vw,36px);max-width:640px;width:100%;text-align:center;box-shadow:0 10px 0 rgba(0,0,0,.2)}
 h1{margin:0 0 4px;font-size:clamp(34px,6vw,56px);line-height:1.05;color:var(--accent)}
 p{margin:6px 0 12px;font-size:18px}
-.tiers{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}
+.tiers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
 .tier{border:3px solid #e3edf7;border-radius:14px;padding:8px 6px;background:#f6fbff}
 .tier b{display:block;font-size:26px;line-height:1}.tier span{font-size:14px}
 .go{border:0;border-radius:999px;background:var(--accent);color:#fff;font:inherit;font-size:24px;font-weight:800;padding:8px 36px;margin:6px;cursor:pointer;box-shadow:0 6px 0 #c42a52;min-height:44px}
@@ -55,15 +55,13 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
     <h1>Blok Kıran Boksör</h1>
     <p>Beton bloklar sana doğru geliyor. Sağa sola kayarak bloğun önüne geç, yumruklarınla kır!</p>
     <div class="tiers">
-      <div class="tier"><b>3</b><span>çok güçlü yumruk</span></div>
-      <div class="tier"><b>5</b><span>güçlü yumruk</span></div>
-      <div class="tier"><b>10</b><span>orta yumruk</span></div>
-      <div class="tier"><b>15</b><span>zayıf yumruk</span></div>
+      <div class="tier"><b>1</b><span>güçlü yumruk</span></div>
+      <div class="tier"><b>2</b><span>zayıf yumruk</span></div>
     </div>
     <button class="go" id="play">Oyna</button>
     <button class="go alt" id="calib">Güç ölçümü</button>
     <p class="note" id="calibNote"></p>
-    <div class="opts"><button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button></div>
+    <div class="opts"><button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button><button class="chip" id="devModel"></button></div>
     <p class="note">Kameraya 2–3 metre uzak dur, kolların ve omuzların görünsün. Görüntü cihazdan çıkmaz. Klavye: ← → kay, Z X C V zayıf/orta/güçlü/çok güçlü yumruk. <a href="oyunlar.html">Diğer oyunlar</a></p>
   </div>
 </div>
@@ -81,7 +79,7 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
 import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 {
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
-const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const MODELS = {lite:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", full:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"};
 const ROUND = 90;
 const $ = id => document.getElementById(id);
 const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
@@ -90,7 +88,7 @@ function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth;
 addEventListener('resize', resize); resize();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const median = a => { if(!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
-const DEV = {panel:false};
+const DEV = {panel:false, model:'full'};
 try { Object.assign(DEV, JSON.parse(localStorage.getItem('boksDev') || '{}')); } catch(e){}
 const saveDev = () => { try { localStorage.setItem('boksDev', JSON.stringify(DEV)); } catch(e){} };
 
@@ -114,7 +112,7 @@ function thud(power){
 }
 
 /* ================= KAMERA + MODEL ================= */
-let pose = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '', delegate = '-';
+let pose = null, loadedModel = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '', delegate = '-';
 let camFacing = 'user';
 try { camFacing = localStorage.getItem('kameraYonu') || 'user'; } catch(e){}
 async function initCam(){
@@ -135,10 +133,12 @@ async function switchCam(){
 }
 async function initModel(){
   const fs = await FilesetResolver.forVisionTasks(WASM);
-  const opts = d => ({baseOptions:{modelAssetPath:MODEL, delegate:d}, runningMode:'VIDEO', numPoses:2,
+  if(pose){ try { pose.close(); } catch(e){} pose = null; }
+  const opts = d => ({baseOptions:{modelAssetPath:MODELS[DEV.model] || MODELS.lite, delegate:d}, runningMode:'VIDEO', numPoses:2,
     minPoseDetectionConfidence:.5, minPosePresenceConfidence:.5, minTrackingConfidence:.5});
   try { pose = await PoseLandmarker.createFromOptions(fs, opts('GPU')); delegate = 'GPU'; }
   catch(e){ pose = await PoseLandmarker.createFromOptions(fs, opts('CPU')); delegate = 'CPU'; }
+  loadedModel = DEV.model;
 }
 
 /* ================= VÜCUT + YUMRUK ALGILAMA ================= */
@@ -159,8 +159,8 @@ let VMAX = 2.4;   // kişinin en güçlü yumruğunun bilek hızı (m/sn), güç
 try { const v = +localStorage.getItem('boksVmax'); if(v > .5) VMAX = v; } catch(e){}
 const MINR = .2;  // bundan zayıf hareket yumruk sayılmaz
 const TIERS = [
-  {n:'Zayıf', r:MINR, hits:15, col:'#9fe7ff'}, {n:'Orta', r:.4, hits:10, col:'#3ddc84'},
-  {n:'Güçlü', r:.65, hits:5, col:'#ffb627'}, {n:'Çok güçlü', r:.85, hits:3, col:'#ff4f7a'}
+  {n:'Zayıf', r:MINR, hits:2, col:'#9fe7ff'}, {n:'Orta', r:.38, hits:1.5, col:'#3ddc84'},
+  {n:'Güçlü', r:.55, hits:1, col:'#ff4f7a'}
 ];
 const tierOf = r => { let t = null; for(const T of TIERS) if(r >= T.r) t = T; return t; };
 /* hasar: kademe noktaları arasında doğrusal, yani darbe şiddetiyle orantılı */
@@ -177,7 +177,7 @@ function damageOf(r){
 }
 const BODY = {ok:false, lock:null, px:0, fx:new OneEuro(.8, 6), persons:0, fps:0, fpsN:0, fpsT:0, lastT:0, lm:null,
   arms:{L:null, R:null}, events:[], log:[]};
-function newArm(){ return {st:'idle', prev:null, peak:0, ext:0, t0:0, cool:0, v:0, armLen:null, vis:false}; }
+function newArm(){ return {st:'idle', hist:[], peak:0, t0:0, cool:0, v:0, vis:false, seen:-9, armed:true, farD:0, frames:0, nv:.2}; }
 BODY.arms.L = newArm(); BODY.arms.R = newArm();
 function resetBody(){ BODY.lock = null; BODY.fx.x = null; BODY.arms.L = newArm(); BODY.arms.R = newArm(); BODY.ok = false; }
 function pick(arr){
@@ -218,36 +218,54 @@ function processPose(res, t){
   const up = nrm(crs(fw, ax));
   const toT = v => ({x:dot(v, ax), y:dot(v, up), z:dot(v, fw)});   // gövde koordinatı: z ileri
   // kollar: ekranın solundaki kol 'L'
+  // iki bağımsız ölçüm: 3D (gövde ekseninde, metre) ve 2D (görüntüde, omuz genişliğiyle metreye çevrilmiş)
+  // ekrana doğru yumrukta 3D derinlik az tahmin edilse bile 2D hareket ve hız yakalar
+  const swW = len(sub(w[11], w[12])) || .3, swI = Math.hypot((l[11].x - l[12].x)*asp, l[11].y - l[12].y) || .1, k2 = swW/swI;
   const leftIsBody11 = (1 - l[11].x) < (1 - l[12].x);
   for(const [side, sh, el, wr] of leftIsBody11 ? [['L',11,13,15],['R',12,14,16]] : [['L',12,14,16],['R',11,13,15]]){
     const A = BODY.arms[side];
-    A.vis = l[wr].visibility > .5 && l[el].visibility > .4;
-    if(!A.vis){ A.prev = null; A.st = 'idle'; continue; }
-    const S = w[sh], E = w[el], Wr = w[wr];
-    const al = len(sub(S, E)) + len(sub(E, Wr));
-    A.armLen = A.armLen === null ? al : A.armLen + (al - A.armLen)*.05;
-    const rel = toT(sub(Wr, S));
-    const sm = A.prev ? {x:rel.x*.7 + A.prev.x*.3, y:rel.y*.7 + A.prev.y*.3, z:rel.z*.7 + A.prev.z*.3} : rel;
-    if(A.prev){
-      const v = len(sub(sm, A.prev))/dt, radial = (len(sm) - len(A.prev))/dt;
-      A.v = v;
-      const ext = len(sm)/(A.armLen || 1);
-      if(A.st === 'idle'){
-        if(t > A.cool && v > Math.max(.5, VMAX*MINR) && radial > v*.35){ A.st = 'go'; A.peak = v; A.ext = ext; A.t0 = t; A.start = A.prev; A.far = sm; A.frames = 1; }
-      } else {
-        A.peak = Math.max(A.peak, v); A.frames++;
-        if(ext > A.ext){ A.ext = ext; A.far = sm; }
-        if(v < A.peak*.45 || t - A.t0 > .4){
-          A.st = 'idle'; A.cool = t + .12;
-          const r = A.peak/VMAX, D = sub(A.far, A.start), dl = len(D);
-          // geçerli yumruk: kol uzadı, bilek en az 15 cm gitti, hareketin çoğu ileri doğru
-          const why = A.ext <= .72 ? 'kol uzamadı' : dl < .15 ? 'kısa hareket' : D.z < dl*.3 ? 'ileri değil' : r < MINR ? 'yavaş' : '';
-          if(!why) BODY.events.push({side, r, v:A.peak, ext:A.ext, t});
-          else BODY.log.push({t, n:'geçersiz', why});
-        }
+    const visible = l[wr].visibility > .3;
+    if(!visible){ if(t - A.seen > .15){ A.hist.length = 0; A.st = 'idle'; } A.vis = false; continue; }
+    A.vis = true; A.seen = t;
+    const S = w[sh], Wr = w[wr];
+    const out = side === 'L' ? -1 : 1;    // ekranda dışa doğru yön
+    const p3 = toT(sub(Wr, S));
+    const p2 = {x:((1 - l[wr].x) - (1 - l[sh].x))*asp*k2, y:-(l[wr].y - l[sh].y)*k2};   // y: yukarı artı
+    A.hist.push({t, p3, p2, d:Math.max(len(p3), Math.hypot(p2.x, p2.y))}); if(A.hist.length > 10) A.hist.shift();
+    if(A.hist.length < 3) continue;
+    const c = A.hist[A.hist.length - 1], o = A.hist[A.hist.length - 3], dtw = Math.max(.02, c.t - o.t);
+    const d3o = len(o.p3), d3c = len(c.p3), d2o = Math.hypot(o.p2.x, o.p2.y), d2c = Math.hypot(c.p2.x, c.p2.y);
+    const v3 = len(sub(c.p3, o.p3))/dtw, v2 = Math.hypot(c.p2.x - o.p2.x, c.p2.y - o.p2.y)/dtw;
+    const v = Math.max(v3, v2*.9), radial = Math.max(d3c - d3o, d2c - d2o)/dtw;
+    A.v = v;
+    // gürültü tabanı: dururken ölçülen titreme hızı; eşik bunun 3 katının altına inmez
+    if(A.st === 'idle' && v < .6) A.nv += (v - A.nv)*(v < A.nv ? .2 : .02);
+    // yeniden kurma: bir yumruktan sonra kol geri çekilmeden yeni yumruk sayılmaz (çift sayımı önler)
+    if(!A.armed && (c.d < A.farD - Math.max(.06, A.travel*.3) || t - A.t0 > 1.2)) A.armed = true;
+    if(A.st === 'idle'){
+      if(A.armed && t > A.cool && v > Math.max(.6, VMAX*MINR, A.nv*3) && radial > v*.25){
+        // başlangıç: son 0,25 sn içinde bileğin omza en yakın olduğu an
+        let st = o; for(const h of A.hist) if(t - h.t < .25 && h.d < st.d) st = h;
+        A.st = 'go'; A.peak = v; A.t0 = t; A.s3 = st.p3; A.s2 = st.p2; A.f3 = c.p3; A.f2 = c.p2; A.frames = 1; A.ext = radial > 0 ? 1 : 0;
+      }
+    } else {
+      A.peak = Math.max(A.peak, v); A.frames++;
+      if(len(c.p3) > len(A.f3)) A.f3 = c.p3;
+      if(Math.hypot(c.p2.x, c.p2.y) > Math.hypot(A.f2.x, A.f2.y)) A.f2 = c.p2;
+      if(radial > 0) A.ext++;
+      // bitiş: kol uzamayı bıraktı ya da geri çekiliyor
+      if(radial < v*.1 || v < A.peak*.35 || t - A.t0 > .5){
+        A.st = 'idle'; A.cool = t + .15;
+        const D3 = sub(A.f3, A.s3), D2 = {x:A.f2.x - A.s2.x, y:A.f2.y - A.s2.y}, l3 = len(D3), l2 = Math.hypot(D2.x, D2.y);
+        const r = A.peak/VMAX, travel = Math.max(l3, l2);
+        A.travel = travel; A.farD = Math.max(len(A.f3), Math.hypot(A.f2.x, A.f2.y));
+        const upOnly = D2.y > .85*l2 && D3.z < .25*l3 && l2 > .05;                   // kolu yukarı kaldırmak
+        const sideOnly = D2.x*out > .88*l2 && D3.z < .2*l3 && l2 > .05;             // kolu yana açmak
+        const why = travel < .09 ? 'kısa hareket' : A.ext < 2 ? 'tek kare' : upOnly ? 'yukarı hareket' : sideOnly ? 'yana hareket' : r < MINR ? 'yavaş' : '';
+        if(!why){ BODY.events.push({side, r, v:A.peak, t}); A.armed = false; }
+        else BODY.log.push({t, n:'geçersiz', why});
       }
     }
-    A.prev = sm;
   }
   if(BODY.log.length > 8) BODY.log.splice(0, BODY.log.length - 8);
 }
@@ -277,10 +295,10 @@ function playerX(dt){
 
 /* ================= OYUN ================= */
 let phase = 'menu', timeLeft = ROUND, countT = 0;
-const G = {x:0, blocks:[], spawn:0, broken:0, missed:0, punches:0, combo:0, best:0, gloves:{L:0, R:0}, lastHit:null, stun:0, shake:0, parts:[], texts:[], tierCount:[0,0,0,0]};
+const G = {x:0, blocks:[], spawn:0, broken:0, missed:0, punches:0, combo:0, best:0, gloves:{L:0, R:0}, lastHit:null, stun:0, shake:0, parts:[], texts:[], tierCount:[0,0,0]};
 const HITNEAR = .05, HITFAR = .3, REACH = .34;
 function resetGame(){
-  Object.assign(G, {x:0, blocks:[], spawn:.8, broken:0, missed:0, punches:0, combo:0, best:0, lastHit:null, stun:0, shake:0, parts:[], texts:[], tierCount:[0,0,0,0]});
+  Object.assign(G, {x:0, blocks:[], spawn:.8, broken:0, missed:0, punches:0, combo:0, best:0, lastHit:null, stun:0, shake:0, parts:[], texts:[], tierCount:[0,0,0]});
   G.gloves = {L:0, R:0}; BODY.events.length = 0;
 }
 function spawnBlock(){
@@ -336,7 +354,7 @@ function update(dt){
   else if(phase === 'play'){
     if(G.stun <= 0) for(const e of evs) handlePunch(e);
     G.spawn -= dt;
-    if(G.spawn <= 0){ spawnBlock(); const prog = (ROUND - timeLeft)/ROUND; G.spawn = 3.2 - prog*1.4 + Math.random()*.8; }
+    if(G.spawn <= 0){ spawnBlock(); const prog = (ROUND - timeLeft)/ROUND; G.spawn = 1.9 - prog*.9 + Math.random()*.6; }
     for(const b of G.blocks){
       b.z -= b.sp*dt; b.shake = Math.max(0, b.shake - dt);
       if(b.z <= .02 && !b.dead){
@@ -446,10 +464,10 @@ function drawPanel(){
   ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
   const A = BODY.arms;
   const L = [
-    `Vücut modeli (${delegate}) · ${BODY.fps.toFixed(0)} fps · kişi ${BODY.persons} · konum ${BODY.px.toFixed(2)} · kamera ${camFacing === 'user' ? 'ön' : 'arka'}`,
+    `Vücut modeli ${loadedModel || '-'} (${delegate}) · ${BODY.fps.toFixed(0)} fps · kişi ${BODY.persons} · konum ${BODY.px.toFixed(2)} · kamera ${camFacing === 'user' ? 'ön' : 'arka'}`,
     `en güçlü yumruk ${VMAX.toFixed(2)} m/sn · eşik ${(VMAX*MINR).toFixed(2)} m/sn`,
-    `sol kol: hız ${A.L.v.toFixed(2)} m/sn ${A.L.st === 'go' ? 'YUMRUK' : ''} ${A.L.vis ? '' : '(görünmüyor)'}`,
-    `sağ kol: hız ${A.R.v.toFixed(2)} m/sn ${A.R.st === 'go' ? 'YUMRUK' : ''} ${A.R.vis ? '' : '(görünmüyor)'}`,
+    `sol kol: hız ${A.L.v.toFixed(2)} m/sn · titreme ${A.L.nv.toFixed(2)} ${A.L.st === 'go' ? 'YUMRUK' : ''} ${A.L.vis ? '' : '(görünmüyor)'}`,
+    `sağ kol: hız ${A.R.v.toFixed(2)} m/sn · titreme ${A.R.nv.toFixed(2)} ${A.R.st === 'go' ? 'YUMRUK' : ''} ${A.R.vis ? '' : '(görünmüyor)'}`,
     `kademeler: ${TIERS.map((T, i) => `${T.n} ${G.tierCount[i]}`).join(' · ')}`,
     `son reddedilen: ${BODY.log.slice(-3).map(l => l.why).join(', ') || '—'}`
   ];
@@ -506,7 +524,7 @@ async function prepare(){
   const b = [$('play'), $('calib')]; b.forEach(x => x.disabled = true);
   try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
   if(!camOK){ try { await initCam(); } catch(e){ note2 = 'Kamera açılamadı, klavyeyle oynayabilirsin'; } }
-  if(camOK && !pose){ try { await initModel(); } catch(e){ camOK = false; note2 = 'Hareket algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; } }
+  if(camOK && (!pose || loadedModel !== DEV.model)){ try { await initModel(); } catch(e){ camOK = false; note2 = 'Hareket algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; } }
   b.forEach(x => x.disabled = false);
 }
 async function startGame(){
@@ -528,7 +546,7 @@ function calibNoteUpdate(){
   let saved = false; try { saved = !!localStorage.getItem('boksVmax'); } catch(e){}
   $('calibNote').textContent = saved ? `Kayıtlı en güçlü yumruk: ${VMAX.toFixed(1)} m/sn. Başka çocuk oynayacaksa tekrar ölç.` : 'İlk oyundan önce güç ölçümü yapmanı öneririm: 3 güçlü yumruk yeter.';
 }
-function devLabels(){ $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel); }
+function devLabels(){ $('devModel').textContent = 'Model: ' + (DEV.model === 'full' ? 'Full (hassas)' : 'Lite (hızlı)'); $('devModel').setAttribute('aria-pressed', DEV.model === 'full'); $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel); }
 $('play').addEventListener('click', startGame);
 $('calib').addEventListener('click', startCalib);
 $('again').addEventListener('click', startGame);
@@ -536,6 +554,7 @@ $('back').addEventListener('click', toMenu);
 $('toMenu').addEventListener('click', toMenu);
 $('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam);
 $('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(); devLabels(); });
+$('devModel').addEventListener('click', () => { DEV.model = DEV.model === 'full' ? 'lite' : 'full'; saveDev(); devLabels(); });
 cv.addEventListener('pointerdown', () => { if(phase === 'calib' && CB.done) toMenu(); });
 devLabels(); camLabels(); calibNoteUpdate();
 globalThis.__BOKS = {BODY, G, damageOf, tierOf, TIERS, processPose, startGame, startCalib, CB, get VMAX(){ return VMAX; }, get phase(){ return phase; }, set timeLeft(v){ timeLeft = v; }};
