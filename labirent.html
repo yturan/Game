@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kirpi Labirenti</title>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+/* Kirpi Labirenti — kolunla yön göster, altınları topla, balçık canavarlarından kaç
+   Yön: uzanmış kolun omuz→bilek açısı (görüntü düzleminde, model derinliğine ihtiyaç yok)
+   Sağ/sol: kol yana · Yukarı: kol yukarı · Aşağı: kol çapraz aşağı (45°) · Kollar serbest: kirpi durur */
+:root{--ink:#1b2a4a;--accent:#ff4f7a;--sun:#ffd23f}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#2f6b3a;font-family:'Baloo 2',system-ui,sans-serif;color:var(--ink)}
+canvas#game{position:fixed;inset:0;width:100%;height:100%;display:block}
+video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+.hud{position:fixed;top:10px;left:10px;right:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;pointer-events:none}
+.hud[hidden],.screen[hidden]{display:none}
+.pill{background:#fff;border-radius:999px;padding:2px 16px;font-size:clamp(16px,2.3vw,26px);font-weight:800;box-shadow:0 4px 0 rgba(0,0,0,.15);white-space:nowrap}
+.hud .btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.hud button{pointer-events:auto;border:0;border-radius:999px;background:#fff;color:var(--ink);font:inherit;font-weight:700;font-size:16px;padding:6px 16px;min-height:44px;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.15)}
+.screen{position:fixed;inset:0;display:grid;place-items:center;background:rgba(20,40,25,.5);padding:16px;overflow:auto}
+.card{background:#fff;border-radius:28px;padding:clamp(18px,3.5vw,36px);max-width:640px;width:100%;text-align:center;box-shadow:0 10px 0 rgba(0,0,0,.2)}
+h1{margin:0 0 4px;font-size:clamp(34px,6vw,56px);line-height:1.05;color:var(--accent)}
+p{margin:6px 0 12px;font-size:18px}
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:12px 0;text-align:left}
+.rule{border:3px solid #e3edf7;border-radius:14px;padding:8px 10px;background:#f6fbff}
+.rule b{display:block;font-size:19px}.rule span{font-size:14px}
+.go{border:0;border-radius:999px;background:var(--accent);color:#fff;font:inherit;font-size:24px;font-weight:800;padding:8px 36px;margin:6px;cursor:pointer;box-shadow:0 6px 0 #c42a52;min-height:44px}
+.go.alt{background:#4d6bff;box-shadow:0 6px 0 #2f47c2}
+.go:active{transform:translateY(4px);box-shadow:none}
+.go:disabled{opacity:.6;cursor:wait}
+.opts{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
+.chip{border:2px solid #e3edf7;border-radius:999px;background:#f6fbff;color:var(--ink);font:inherit;font-size:15px;font-weight:700;padding:6px 14px;min-height:44px;cursor:pointer}
+.chip[aria-pressed=true]{border-color:#4d6bff;background:#eef1ff}
+.note{font-size:14px;opacity:.75;margin:10px 0 0}.note a{color:var(--ink)}
+button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset:3px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<video id="cam" playsinline muted></video>
+
+<div class="hud" id="hud" hidden>
+  <div class="pill" id="hudL">Altın: 0</div>
+  <div class="btns"><button id="toMenu" type="button">Menü</button><button id="camHud" type="button">Kamera</button></div>
+  <div class="pill" id="hudR">Can: 3</div>
+</div>
+
+<div class="screen" id="menu">
+  <div class="card">
+    <h1>Kirpi Labirenti</h1>
+    <p>Kolunla yön göster, kirpi o yöne gitsin. Altınları topla, balçık canavarlarına yakalanma!</p>
+    <div class="rules">
+      <div class="rule"><b>Sağa / sola</b><span>Kolunu o yana uzat</span></div>
+      <div class="rule"><b>Yukarı</b><span>Kolunu yukarı kaldır</span></div>
+      <div class="rule"><b>Aşağı</b><span>Kolunu çapraz aşağı uzat</span></div>
+      <div class="rule"><b>Dur</b><span>Kolların yanında serbest</span></div>
+    </div>
+    <p style="font-size:16px">Yıldızı alınca canavarlar korkar, onları yakalayabilirsin!</p>
+    <button class="go" id="play">Oyna</button>
+    <div class="opts"><button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button></div>
+    <p class="note">Kameraya 2–3 metre uzak dur, iki kolun da görünsün. Görüntü cihazdan çıkmaz. Klavye: ok tuşlarına basılı tut. <a href="oyunlar.html">Diğer oyunlar</a></p>
+  </div>
+</div>
+
+<div class="screen" id="over" hidden>
+  <div class="card">
+    <h1 id="overT">Oyun bitti</h1>
+    <p id="result"></p>
+    <button class="go" id="again">Tekrar oyna</button>
+    <button class="go alt" id="back">Menü</button>
+  </div>
+</div>
+
+<script type="module">
+import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+{
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const $ = id => document.getElementById(id);
+const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
+let W = 0, H = 0;
+function resize(){ const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W*d; cv.height = H*d; ctx.setTransform(d,0,0,d,0,0); }
+addEventListener('resize', resize); resize();
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const DEV = {panel:false};
+try { Object.assign(DEV, JSON.parse(localStorage.getItem('labDev') || '{}')); } catch(e){}
+const saveDev = () => { try { localStorage.setItem('labDev', JSON.stringify(DEV)); } catch(e){} };
+
+/* ================= SES ================= */
+let ac = null;
+function sfx(f1, f2, dur, type = 'triangle', vol = .15){
+  if(!ac) return;
+  const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+  o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+  o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur + .02);
+}
+
+/* ================= KAMERA + MODEL ================= */
+let pose = null, camOK = false, lastVT = -1, asp = 4/3, note2 = '', delegate = '-';
+let camFacing = 'user';
+try { camFacing = localStorage.getItem('kameraYonu') || 'user'; } catch(e){}
+async function initCam(){
+  if(video.srcObject){ video.srcObject.getTracks().forEach(tr => tr.stop()); video.srcObject = null; }
+  const base = {width:{ideal:640}, height:{ideal:480}};
+  let s;
+  try { s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:{exact:camFacing}}, audio:false}); }
+  catch(e){ s = await navigator.mediaDevices.getUserMedia({video:{...base, facingMode:camFacing}, audio:false}); }
+  video.srcObject = s; await video.play(); camOK = true; lastVT = -1;
+}
+function camLabels(){ for(const id of ['camBtn', 'camHud']) $(id).textContent = 'Kamera: ' + (camFacing === 'user' ? 'Ön' : 'Arka'); }
+async function switchCam(){
+  camFacing = camFacing === 'user' ? 'environment' : 'user';
+  try { localStorage.setItem('kameraYonu', camFacing); } catch(e){}
+  camLabels();
+  if(camOK){ try { await initCam(); } catch(e){ camFacing = camFacing === 'user' ? 'environment' : 'user'; camLabels(); try { await initCam(); } catch(e2){} } }
+  ARM.lock = null;
+}
+async function initModel(){
+  const fs = await FilesetResolver.forVisionTasks(WASM);
+  const opts = d => ({baseOptions:{modelAssetPath:MODEL, delegate:d}, runningMode:'VIDEO', numPoses:2,
+    minPoseDetectionConfidence:.5, minPosePresenceConfidence:.5, minTrackingConfidence:.5});
+  try { pose = await PoseLandmarker.createFromOptions(fs, opts('GPU')); delegate = 'GPU'; }
+  catch(e){ pose = await PoseLandmarker.createFromOptions(fs, opts('CPU')); delegate = 'CPU'; }
+}
+
+/* ================= KOL YÖNÜ ================= */
+/* Açı: ekranda omuzdan bileğe, derece, yukarı artı (0 sağ, 90 yukarı, 180 sol, -90 aşağı).
+   Bölgeler arasında boşluklar var: sınırda titreme yön değiştirmez, sadece komutu düşürür. */
+const ZONES = [
+  {d:'R', in:a => Math.abs(a) < 30},
+  {d:'L', in:a => Math.abs(a) > 150},
+  {d:'U', in:a => a > 60 && a < 120},
+  {d:'D', in:a => (a < -35 && a > -65) || (a < -115 && a > -145)}
+];
+const zoneOf = a => { for(const z of ZONES) if(z.in(a)) return z.d; return null; };
+const ARM = {lock:null, L:{len:null, ext:0, ang:0, dir:null, on:false, vis:false}, R:{len:null, ext:0, ang:0, dir:null, on:false, vis:false},
+  raw:null, cmd:null, cand:null, candT:0, lastT:0, fps:0, fpsN:0, fpsT:0, ok:false, lm:null, persons:0};
+function pick(arr){
+  if(!arr.length) return -1;
+  let best = -1, bs = Infinity;
+  arr.forEach((l, i) => {
+    const cx = (l[11].x + l[12].x)/2, s = Math.hypot(l[11].x - l[12].x, l[11].y - l[12].y);
+    const sc = ARM.lock ? Math.abs(cx - ARM.lock.x) + Math.abs(s - ARM.lock.s)*2 : -s;
+    if(sc < bs){ bs = sc; best = i; }
+  });
+  const l = arr[best]; ARM.lock = {x:(l[11].x + l[12].x)/2, s:Math.hypot(l[11].x - l[12].x, l[11].y - l[12].y)};
+  return best;
+}
+function processPose(res, t){
+  ARM.fpsN++; if(t - ARM.fpsT >= 1){ ARM.fps = ARM.fpsN/(t - ARM.fpsT); ARM.fpsN = 0; ARM.fpsT = t; }
+  const dt = ARM.lastT ? clamp(t - ARM.lastT, .01, .2) : .033; ARM.lastT = t;
+  asp = (video.videoWidth || 640)/(video.videoHeight || 480);
+  const arr = res.landmarks || [], idx = pick(arr);
+  ARM.persons = arr.length;
+  let raw = null;
+  if(idx >= 0){
+    const l = arr[idx];
+    const P = l.map(p => ({x:(1 - p.x)*asp, y:p.y, v:p.visibility ?? 1}));
+    ARM.lm = P;
+    ARM.ok = P[11].v > .5 && P[12].v > .5;
+    if(ARM.ok){
+      const leftIs11 = P[11].x < P[12].x, dirs = [];
+      for(const [side, sh, el, wr] of leftIs11 ? [['L',11,13,15],['R',12,14,16]] : [['L',12,14,16],['R',11,13,15]]){
+        const A = ARM[side], S = P[sh], E = P[el], Wr = P[wr];
+        A.vis = Wr.v > .45 && E.v > .35;
+        if(!A.vis){ A.on = false; A.dir = null; continue; }
+        const al = Math.hypot(S.x - E.x, S.y - E.y) + Math.hypot(E.x - Wr.x, E.y - Wr.y);
+        // kol uzunluğu: en uzun ölçümlere doğru yavaşça (kol kendine doğru dönünce kısa görünür)
+        A.len = A.len === null ? al : al > A.len ? A.len + (al - A.len)*.3 : A.len + (al - A.len)*.01;
+        A.ext = Math.hypot(Wr.x - S.x, Wr.y - S.y)/(A.len || 1);
+        A.ang = Math.atan2(-(Wr.y - S.y), Wr.x - S.x)*180/Math.PI;
+        A.on = A.on ? A.ext > .7 : A.ext > .8;          // kol uzanmış mı (histerezisli)
+        A.dir = A.on ? zoneOf(A.ang) : null;
+        if(A.dir) dirs.push(A.dir);
+      }
+      const uniq = [...new Set(dirs)];
+      raw = uniq.length === 1 ? uniq[0] : null;           // iki kol farklı yön gösterirse komut yok
+    }
+  } else { ARM.ok = false; ARM.lm = null; }
+  ARM.raw = raw;
+  // kararlılık: yeni yön 0,12 sn, durma 0,2 sn sabit kalmalı
+  if(raw !== ARM.cmd){
+    if(raw !== ARM.cand){ ARM.cand = raw; ARM.candT = 0; }
+    ARM.candT += dt;
+    if(ARM.candT >= (raw === null ? .2 : .12)) ARM.cmd = raw;
+  } else { ARM.cand = raw; ARM.candT = 0; }
+}
+function detect(){
+  if(!pose || !camOK || video.readyState < 2 || video.currentTime === lastVT) return;
+  lastVT = video.currentTime;
+  const ts = performance.now();
+  pose.detectForVideo(video, ts, res => processPose(res, ts/1000));
+}
+const keys = {};
+addEventListener('keydown', e => { if(e.code.startsWith('Arrow') && phase !== 'menu') e.preventDefault(); keys[e.code] = true; if(e.code === 'KeyD'){ DEV.panel = !DEV.panel; saveDev(); devLabels(); } });
+addEventListener('keyup', e => { keys[e.code] = false; });
+function command(){
+  const k = keys.ArrowRight ? 'R' : keys.ArrowLeft ? 'L' : keys.ArrowUp ? 'U' : keys.ArrowDown ? 'D' : null;
+  return k || ARM.cmd;
+}
+
+/* ================= LABİRENT ================= */
+const MAZE = [
+  "#####################",
+  "#o........#........o#",
+  "#.##.####.#.####.##.#",
+  "#...................#",
+  "#.##.#.#######.#.##.#",
+  "#....#....#....#....#",
+  "####.####.#.####.####",
+  "#.........M.........#",
+  "####.#.###.###.#.####",
+  "#....#....#....#....#",
+  "#.##.####.#.####.##.#",
+  "#o.#.............#.o#",
+  "##.#.#.#######.#.#.##",
+  "#....#....P....#....#",
+  "#####################"
+];
+const COLS = MAZE[0].length, ROWS = MAZE.length;
+const DV = {R:[1, 0], L:[-1, 0], U:[0, -1], D:[0, 1]}, OPP = {R:'L', L:'R', U:'D', D:'U'};
+let grid = [], coinsLeft = 0, start = null, home = null;
+function buildMaze(){
+  grid = MAZE.map(r => r.split(''));
+  coinsLeft = 0;
+  for(let y = 0; y < ROWS; y++) for(let x = 0; x < COLS; x++){
+    const c = grid[y][x];
+    if(c === 'P'){ start = {x, y}; grid[y][x] = ' '; }
+    else if(c === 'M'){ home = {x, y}; grid[y][x] = ' '; }
+    else if(c === '.' || c === 'o') coinsLeft++;
+  }
+}
+const wall = (x, y) => x < 0 || y < 0 || x >= COLS || y >= ROWS || grid[y][x] === '#';
+const open = (e, d) => !wall(Math.round(e.x) + DV[d][0], Math.round(e.y) + DV[d][1]);
+/* ızgara üzerinde hareket: yön değişikliği sadece kare merkezinde */
+function moveEntity(e, want, speed, dt, chooser){
+  let rem = speed*dt;
+  while(rem > 1e-6){
+    const cx = Math.round(e.x), cy = Math.round(e.y), atC = Math.abs(e.x - cx) < 1e-6 && Math.abs(e.y - cy) < 1e-6;
+    if(atC){
+      e.x = cx; e.y = cy;
+      const d = chooser ? chooser(e) : want;
+      if(d && open(e, d)) e.dir = d;
+      else if(!(e.dir && open(e, e.dir) && (chooser || want))) { e.moving = false; return; }
+    } else if(want && e.dir && want === OPP[e.dir]) e.dir = want;   // geri dönüş hemen olur
+    if(!e.dir){ e.moving = false; return; }
+    e.moving = true;
+    const [dx, dy] = DV[e.dir];
+    // bir sonraki merkeze kalan mesafe
+    const tx = dx ? (dx > 0 ? Math.floor(e.x + 1e-6) + 1 : Math.ceil(e.x - 1e-6) - 1) : e.x;
+    const ty = dy ? (dy > 0 ? Math.floor(e.y + 1e-6) + 1 : Math.ceil(e.y - 1e-6) - 1) : e.y;
+    const dist = Math.abs(tx - e.x) + Math.abs(ty - e.y), step = Math.min(rem, dist);
+    e.x += dx*step; e.y += dy*step; rem -= step;
+    if(step >= dist - 1e-9){ e.x = Math.round(e.x); e.y = Math.round(e.y); }
+  }
+}
+
+/* ================= OYUN ================= */
+let phase = 'menu', countT = 0;
+const MCOL = ['#ff4f7a', '#b46cff', '#3ddc84', '#ffb627', '#4da3ff'];
+const G = {p:null, mons:[], score:0, lives:3, level:1, fright:0, inv:0, deathT:0, parts:[], texts:[], eaten:0};
+function resetLevel(keepScore){
+  buildMaze();
+  G.p = {x:start.x, y:start.y, dir:null, moving:false, face:'R', anim:0};
+  const n = Math.min(5, 2 + G.level);
+  G.mons = Array.from({length:n}, (_, i) => ({x:home.x, y:home.y, dir:['L', 'R', 'L', 'R', 'L'][i], col:MCOL[i], wait:i*1.6, dead:false, wob:Math.random()*6}));
+  G.fright = 0; G.inv = 1.5;
+  if(!keepScore){ G.score = 0; G.lives = 3; }
+}
+function respawn(){
+  G.p.x = start.x; G.p.y = start.y; G.p.dir = null; G.inv = 2;
+  G.mons.forEach((m, i) => { m.x = home.x; m.y = home.y; m.wait = .8 + i*1.2; m.dead = false; });
+}
+function monsterChooser(m){
+  const p = G.p, opts = Object.keys(DV).filter(d => d !== OPP[m.dir] && open(m, d));
+  if(!opts.length) return OPP[m.dir];
+  if(m.dead) return opts.sort((a, b) => dist2(m, a, home) - dist2(m, b, home))[0];
+  if(G.fright > 0) return Math.random() < .7 ? opts.sort((a, b) => dist2(m, b, p) - dist2(m, a, p))[0] : opts[Math.random()*opts.length | 0];
+  return Math.random() < .55 + G.level*.05 ? opts.sort((a, b) => dist2(m, a, p) - dist2(m, b, p))[0] : opts[Math.random()*opts.length | 0];
+}
+const dist2 = (e, d, t) => { const x = Math.round(e.x) + DV[d][0], y = Math.round(e.y) + DV[d][1]; return (x - t.x)**2 + (y - t.y)**2; };
+function burst(x, y, col, n){ for(let i = 0; i < n; i++){ const a = Math.random()*6.28, v = 80 + Math.random()*200; G.parts.push({x, y, vx:Math.cos(a)*v, vy:Math.sin(a)*v, life:.7, c:col}); } }
+let TS = 30, OX = 0, OY = 0;
+const sx = x => OX + (x + .5)*TS, sy = y => OY + (y + .5)*TS;
+function update(dt){
+  G.inv = Math.max(0, G.inv - dt); G.fright = Math.max(0, G.fright - dt);
+  if(G.deathT > 0){ G.deathT -= dt; if(G.deathT <= 0){ if(G.lives <= 0) return endGame(false); respawn(); } return; }
+  const want = command(), p = G.p;
+  const pSpeed = 4.2 + (G.level - 1)*.2;
+  if(want){ moveEntity(p, want, pSpeed, dt, null); if(p.dir) p.face = p.dir; }
+  else p.moving = false;                                   // komut yoksa olduğu yerde durur
+  if(p.moving) p.anim += dt*12;
+  // altın ve yıldız
+  const gx = Math.round(p.x), gy = Math.round(p.y);
+  if(Math.abs(p.x - gx) < .3 && Math.abs(p.y - gy) < .3){
+    const c = grid[gy][gx];
+    if(c === '.'){ grid[gy][gx] = ' '; coinsLeft--; G.score++; sfx(900, 1300, .06, 'square', .05); }
+    else if(c === 'o'){ grid[gy][gx] = ' '; coinsLeft--; G.score += 5; G.fright = 7; G.eaten = 0; sfx(500, 1500, .4, 'triangle', .2); }
+    if(coinsLeft <= 0){ G.level++; sfx(520, 1040, .3); G.texts.push({x:W/2, y:H/2, t:`${G.level}. bölüm!`, c:'#ffd23f', life:1.8}); resetLevel(true); return; }
+  }
+  // canavarlar
+  const mSpeed = 2.5 + G.level*.25;
+  for(const m of G.mons){
+    m.wob += dt*6;
+    if(m.wait > 0){ m.wait -= dt; continue; }
+    const sp = m.dead ? 7 : G.fright > 0 ? mSpeed*.6 : mSpeed;
+    moveEntity(m, null, sp, dt, monsterChooser);
+    if(m.dead && Math.round(m.x) === home.x && Math.round(m.y) === home.y){ m.dead = false; m.wait = 1; }
+    if(!m.dead && Math.hypot(m.x - p.x, m.y - p.y) < .65){
+      if(G.fright > 0){ m.dead = true; G.eaten++; const pts = 10*G.eaten; G.score += pts; burst(sx(m.x), sy(m.y), m.col, 20); G.texts.push({x:sx(m.x), y:sy(m.y), t:'+' + pts, c:'#fff', life:1}); sfx(300, 1200, .25, 'square', .12); }
+      else if(G.inv <= 0){ G.lives--; G.deathT = 1.4; burst(sx(p.x), sy(p.y), '#c98a4a', 30); sfx(500, 80, .8, 'sawtooth', .15); G.texts.push({x:sx(p.x), y:sy(p.y) - TS, t:'Yakalandın!', c:'#ff8fa3', life:1.3}); break; }
+    }
+  }
+  for(const q of G.parts){ q.x += q.vx*dt; q.y += q.vy*dt; q.life -= dt; }
+  G.parts = G.parts.filter(q => q.life > 0);
+  for(const x of G.texts){ x.y -= 40*dt; x.life -= dt; }
+  G.texts = G.texts.filter(x => x.life > 0);
+}
+
+/* ================= ÇİZİM ================= */
+function circle(x, y, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); }
+function rrect(x, y, w, h, r, c){ ctx.fillStyle = c; ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+function outlined(t, x, y, size, fill){
+  ctx.font = `800 ${size}px "Baloo 2",sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size/7); ctx.strokeStyle = '#1b2a4a'; ctx.strokeText(t, x, y);
+  ctx.fillStyle = fill; ctx.fillText(t, x, y);
+}
+function layout(){
+  const top = 64, side = Math.min(W*.24, 230) + 16;
+  const wide = W > H*1.25;
+  const aw = wide ? W - side - 16 : W - 24, ah = wide ? H - top - 12 : H - top - 150;
+  TS = Math.floor(Math.min(aw/COLS, ah/ROWS));
+  OX = Math.floor((wide ? 12 : (W - TS*COLS)/2)); OY = top + Math.floor((ah - TS*ROWS)/2);
+  if(wide) OX = Math.floor(12 + (aw - TS*COLS)/2);
+  return wide;
+}
+function drawMaze(t){
+  rrect(OX - 8, OY - 8, TS*COLS + 16, TS*ROWS + 16, 18, '#1f4d2a');
+  rrect(OX, OY, TS*COLS, TS*ROWS, 10, '#e9d8a6');
+  for(let y = 0; y < ROWS; y++) for(let x = 0; x < COLS; x++){
+    const c = grid[y][x], px = OX + x*TS, py = OY + y*TS;
+    if(c === '#'){
+      rrect(px + 1, py + 1, TS - 2, TS - 2, TS*.3, '#3ea85c');
+      ctx.fillStyle = '#2f8f4e'; ctx.beginPath(); ctx.arc(px + TS*.35, py + TS*.4, TS*.18, 0, 7); ctx.arc(px + TS*.68, py + TS*.62, TS*.16, 0, 7); ctx.fill();
+    } else if(c === '.'){ circle(px + TS/2, py + TS/2, TS*.13, '#ffc93c'); circle(px + TS/2 - TS*.04, py + TS/2 - TS*.04, TS*.05, '#fff3b0'); }
+    else if(c === 'o'){
+      const r = TS*.36*(1 + Math.sin(t*6)*.08);
+      ctx.fillStyle = '#ffd23f'; ctx.beginPath();
+      for(let i = 0; i < 10; i++){ const a = -Math.PI/2 + i*Math.PI/5, rr = i % 2 ? r*.45 : r; ctx.lineTo(px + TS/2 + Math.cos(a)*rr, py + TS/2 + Math.sin(a)*rr); }
+      ctx.fill(); ctx.strokeStyle = '#b07d10'; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+}
+function drawHedgehog(t){
+  const p = G.p, x = sx(p.x), y = sy(p.y), r = TS*.46;
+  if(G.deathT > 0){ ctx.globalAlpha = clamp(G.deathT/1.4, 0, 1); }
+  else if(G.inv > 0 && Math.floor(G.inv*10) % 2) ctx.globalAlpha = .4;
+  const f = p.face === 'L' ? -1 : 1, bob = p.moving ? Math.abs(Math.sin(p.anim))*TS*.06 : 0;
+  ctx.save(); ctx.translate(x, y - bob);
+  ctx.fillStyle = '#6d4527';
+  ctx.beginPath();
+  for(let i = 0; i <= 12; i++){ const a = Math.PI*(.6 + i/12*1.3)*1 , rr = i % 2 ? r : r*1.25; ctx.lineTo(-f*Math.cos(a - Math.PI)*rr*.95 + 0, -Math.sin(a)*rr*.9 + r*.1); }
+  ctx.fill();
+  ctx.fillStyle = '#f2c99a'; ctx.beginPath(); ctx.ellipse(f*r*.25, r*.15, r*.62, r*.55, 0, 0, 7); ctx.fill();
+  circle(f*r*.82, r*.12, r*.12, '#1b2a4a');
+  const ey = p.face === 'U' ? -r*.12 : p.face === 'D' ? r*.12 : 0;
+  circle(f*r*.38, -r*.05 + ey, r*.13, '#fff'); circle(f*r*.42, -r*.05 + ey, r*.07, '#1b2a4a');
+  const lg = p.moving ? Math.sin(p.anim)*r*.15 : 0;
+  circle(-r*.25 + lg, r*.62, r*.15, '#4e3219'); circle(r*.25 - lg, r*.62, r*.15, '#4e3219');
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+function drawMonster(m, t){
+  if(m.dead){ const x = sx(m.x), y = sy(m.y), r = TS*.4; for(const s of [-1, 1]){ circle(x + s*r*.35, y, r*.25, '#fff'); circle(x + s*r*.35, y, r*.12, '#1b2a4a'); } return; }
+  const x = sx(m.x), y = sy(m.y), r = TS*.44;
+  const scared = G.fright > 0, blink = scared && G.fright < 2 && Math.floor(G.fright*6) % 2;
+  const col = scared ? (blink ? '#ffffff' : '#9fd6ff') : m.col;
+  const sq = 1 + Math.sin(m.wob)*.07;
+  ctx.save(); ctx.translate(x, y + r*.2);
+  ctx.fillStyle = col; ctx.beginPath();
+  ctx.ellipse(0, 0, r*sq, r*.85/sq, 0, Math.PI, 0); ctx.lineTo(r*sq, r*.3); ctx.quadraticCurveTo(0, r*.55, -r*sq, r*.3); ctx.closePath(); ctx.fill();
+  circle(-r*.35, -r*.55, r*.13, 'rgba(255,255,255,.35)');
+  const lx = clamp(G.p.x - m.x, -1, 1)*r*.08, ly = clamp(G.p.y - m.y, -1, 1)*r*.08;
+  for(const s of [-1, 1]){ circle(s*r*.33, -r*.3, r*.22, '#fff'); circle(s*r*.33 + lx, -r*.3 + ly, r*.11, scared ? '#4d6bff' : '#1b2a4a'); }
+  if(scared){ ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 2; ctx.beginPath(); for(let i = 0; i <= 4; i++) ctx.lineTo(-r*.35 + i*r*.175, r*.05 + (i % 2 ? -r*.06 : r*.06)); ctx.stroke(); }
+  ctx.restore();
+}
+const ARROW = {R:0, D:Math.PI/2, L:Math.PI, U:-Math.PI/2};
+function drawCommand(wide){
+  const cmd = command(), r = Math.min(70, TS*2.2);
+  const cx = wide ? W - Math.min(W*.24, 230)/2 - 12 : W/2, cy = wide ? H - r - 30 : H - r - 24;
+  circle(cx, cy, r, 'rgba(255,255,255,.9)');
+  if(cmd){
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(ARROW[cmd]);
+    ctx.fillStyle = '#3ddc84'; ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = 4; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(r*.65, 0); ctx.lineTo(r*.05, -r*.5); ctx.lineTo(r*.05, -r*.2); ctx.lineTo(-r*.6, -r*.2); ctx.lineTo(-r*.6, r*.2); ctx.lineTo(r*.05, r*.2); ctx.lineTo(r*.05, r*.5); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  } else outlined('DUR', cx, cy, r*.5, '#ff8fa3');
+  // iki kolun ayrı durumu
+  for(const [s, ox] of [['L', -1], ['R', 1]]){ const A = ARM[s]; circle(cx + ox*(r + 18), cy - r*.6, 9, !A.vis ? 'rgba(255,255,255,.3)' : A.dir ? '#3ddc84' : A.on ? '#ffd23f' : '#cfd8e3'); }
+}
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24]];
+function drawPreview(wide){
+  if(!camOK || video.readyState < 2) return;
+  const pw = Math.min(wide ? Math.min(W*.24, 230) : 150, 230), ph = pw/asp, px = W - pw - 12, py = wide ? 64 : H - ph - 12;
+  if(!wide) return;
+  ctx.save(); ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.clip();
+  ctx.translate(px + pw, py); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph); ctx.restore();
+  if(ARM.lm){
+    ctx.lineWidth = 4; ctx.lineCap = 'round';
+    for(const [a, b] of BONES){ const P = ARM.lm; if(P[a].v > .4 && P[b].v > .4){ const arm = [13, 14, 15, 16].includes(b); const side = (P[11].x < P[12].x) === [11, 13, 15].includes(a) ? 'L' : 'R'; ctx.strokeStyle = arm && ARM[side].dir ? '#3ddc84' : '#ffffff'; ctx.beginPath(); ctx.moveTo(px + P[a].x/asp*pw, py + P[a].y*ph); ctx.lineTo(px + P[b].x/asp*pw, py + P[b].y*ph); ctx.stroke(); } }
+  }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.stroke();
+}
+const DN = {R:'sağ', L:'sol', U:'yukarı', D:'aşağı'};
+function drawPanel(){
+  if(!DEV.panel) return;
+  const w = Math.min(420, W - 24), h = 120, x = 12, y = H - h - 12;
+  ctx.fillStyle = 'rgba(10,16,32,.82)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
+  ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
+  const L = [
+    `Vücut modeli (${delegate}) · ${ARM.fps.toFixed(0)} fps · kişi ${ARM.persons} · kamera ${camFacing === 'user' ? 'ön' : 'arka'}`,
+    ...['L', 'R'].map(s => { const A = ARM[s]; return `${s === 'L' ? 'sol' : 'sağ'} kol: ${A.vis ? `açı ${A.ang.toFixed(0)}° · uzanma ${A.ext.toFixed(2)} ${A.on ? 'UZANMIŞ' : ''} → ${A.dir ? DN[A.dir] : '—'}` : 'görünmüyor'}`; }),
+    `ham ${ARM.raw ? DN[ARM.raw] : '—'} · komut ${ARM.cmd ? DN[ARM.cmd] : 'dur'} · bekleyen ${ARM.cand ? DN[ARM.cand] : 'dur'} ${ARM.candT.toFixed(2)} sn`
+  ];
+  L.forEach((s, i) => ctx.fillText(s, x + 10, y + 10 + i*24, w - 20));
+}
+function render(t){
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#3a7d45'); g.addColorStop(1, '#245c30');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  if(!grid.length) return;
+  const wide = layout();
+  drawMaze(t);
+  for(const m of G.mons) drawMonster(m, t);
+  if(G.p) drawHedgehog(t);
+  for(const q of G.parts){ ctx.globalAlpha = Math.max(0, q.life/.7); circle(q.x, q.y, 4, q.c); }
+  ctx.globalAlpha = 1;
+  for(const x of G.texts){ ctx.globalAlpha = Math.min(1, x.life*2); outlined(x.t, x.x, x.y, Math.max(22, TS*.9), x.c); }
+  ctx.globalAlpha = 1;
+  if(phase !== 'menu'){ drawPreview(wide); drawCommand(wide); drawPanel(); }
+  if(phase === 'count') outlined(String(Math.ceil(countT)), W/2, H*.45, Math.round(Math.min(W, H)*.25), '#ffd23f');
+  if((phase === 'play' || phase === 'count') && camOK && !ARM.ok) outlined('Kameranın önüne geç, kolların görünsün', W/2, OY + TS*ROWS/2, Math.min(28, W*.04), '#ff8fa3');
+  if((phase === 'play' || phase === 'count') && !camOK && note2) outlined(note2, W/2, OY + TS*ROWS/2, Math.min(22, W*.03), '#fff');
+}
+
+/* ================= DÖNGÜ ================= */
+let last = performance.now();
+function loop(){
+  const now = performance.now(), dt = Math.min(.05, (now - last)/1000), t = now/1000; last = now;
+  detect();
+  if(phase === 'count'){ countT -= dt; if(countT <= 0){ phase = 'play'; sfx(400, 900, .25, 'square', .12); } }
+  if(phase === 'play') update(dt);
+  render(t);
+  $('hudL').textContent = `Altın: ${G.score} · Bölüm ${G.level}`;
+  $('hudR').textContent = `Can: ${'♥'.repeat(Math.max(0, G.lives))}`;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ================= MENÜ ================= */
+async function startGame(){
+  const b = $('play'); b.disabled = true;
+  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch(e){}
+  if(!camOK){ try { await initCam(); } catch(e){ note2 = 'Kamera açılamadı, ok tuşlarıyla oynayabilirsin'; } }
+  if(camOK && !pose){ try { await initModel(); } catch(e){ camOK = false; note2 = 'Hareket algılayıcı yüklenemedi (internet?), ok tuşlarıyla oynayabilirsin'; } }
+  b.disabled = false;
+  G.level = 1; resetLevel(false); G.parts = []; G.texts = []; G.deathT = 0;
+  countT = 3; phase = 'count';
+  $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
+}
+function endGame(won){
+  phase = 'end'; $('hud').hidden = true; $('over').hidden = false;
+  $('overT').textContent = won ? 'Kazandın!' : 'Oyun bitti';
+  $('result').textContent = `${G.score} altın topladın, ${G.level}. bölüme kadar geldin!`;
+  $('again').focus();
+}
+function toMenu(){ phase = 'menu'; $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; }
+function devLabels(){ $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel); }
+$('play').addEventListener('click', startGame);
+$('again').addEventListener('click', startGame);
+$('back').addEventListener('click', toMenu);
+$('toMenu').addEventListener('click', toMenu);
+$('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('click', switchCam);
+$('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(); devLabels(); });
+devLabels(); camLabels(); buildMaze();
+globalThis.__LAB = {ARM, G, processPose, zoneOf, startGame, moveEntity, open, get grid(){ return grid; }, get coinsLeft(){ return coinsLeft; }, get phase(){ return phase; }, MAZE, keys};
+}
+</script>
+</body>
+</html>
