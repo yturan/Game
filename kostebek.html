@@ -51,11 +51,11 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
 <div class="screen" id="menu">
   <div class="card">
     <h1>Köstebek Avı</h1>
-    <p>Yumruğun tokmak! Elini kaldır, köstebeğin üstüne hızla indir.</p>
+    <p>Yumruğun tokmak! Elini kaldır, hızla aşağı indir. Hedef, elini kaldırdığın yere göre seçilir; kaldırdığında hedef delik sarı parlar.</p>
     <div class="rules">
       <div class="rule"><b>İleri delikler</b><span>Kolun dümdüz, ileri doğru vur</span></div>
       <div class="rule"><b>Yakın delikler</b><span>Dirseğin kırık, önüne doğru vur</span></div>
-      <div class="rule"><b>Orta / yanlar</b><span>Vücudunun ortasına ya da sağına soluna vur</span></div>
+      <div class="rule"><b>Orta / yanlar</b><span>Elini omuzlarının arasında kaldırırsan orta, omzunun dışında kaldırırsan yan delik</span></div>
     </div>
     <p style="font-size:16px">Altın kasklı köstebek 3 puan. Kirpiye vurma, puan kaybedersin!</p>
     <button class="go" id="play">Oyna</button>
@@ -139,15 +139,18 @@ function elbowAngle(S, E, Wr){ const a = sub(S, E), b = sub(Wr, E); return Math.
 /* Kalibrasyon: ileri ve yakın vuruşlarda ölçülen dirsek açısı ve bitiş yüksekliği */
 let CAL = null;
 try { CAL = JSON.parse(localStorage.getItem('kosCal') || 'null'); } catch(e){}
-const DEFCAL = {far:{ang:165, drop:.3}, near:{ang:110, drop:.75}};
-/* sıra kararı: iki ölçümün ortak oyu, -1 yakın … +1 ileri */
-function rowScore(ang, drop){
-  const c = CAL || DEFCAL;
+const DEFCAL = {v:3, far:{ang:165, ext:.95}, near:{ang:120, ext:.65}};
+/* sıra kararı, vuruşun başındaki duruştan iki ölçümle:
+   ang = 3D dirsek açısı; ext = kalkık elin omuz üstündeki yüksekliği (gövde boyu cinsinden; kırık kolda el alçakta kalır)
+   Önden bakan kamerada öne-arkaya bükülen dirsek görüntüde düz görünür, bu yüzden ext gerekir. Artı = ileri, eksi = yakın */
+const calOK = () => CAL && CAL.v === 3 && CAL.far && CAL.near;
+function rowScore(ang, ext){
+  const c = calOK() ? CAL : DEFCAL;
   const sa = clamp((ang - (c.far.ang + c.near.ang)/2)/(Math.abs(c.far.ang - c.near.ang)/2 || 20), -1.5, 1.5);
-  const sd = clamp(((c.far.drop + c.near.drop)/2 - drop)/(Math.abs(c.near.drop - c.far.drop)/2 || .2), -1.5, 1.5);
-  return .5*sa + .5*sd;
+  const se = clamp((ext - (c.far.ext + c.near.ext)/2)/(Math.abs(c.far.ext - c.near.ext)/2 || .12), -1.5, 1.5);
+  return .5*sa + .5*se;
 }
-const COLTH = .27;   // omuz genişliği cinsinden: ortadan bu kadar uzak → yan delik (orta vuruş ≈0, yan vuruş ≈0,5)
+const colOf = u => u < 0 ? 0 : u > 1 ? 2 : 1;   // omuz hizaları arası orta, dışı yanlar
 const BODY = {lock:null, ok:false, hipOK:false, lm:null, persons:0, fps:0, fpsN:0, fpsT:0, lastT:0, T:.3, sw:.15, cx:0,
   arms:{L:null, R:null}, events:[], log:[]};
 function newArm(){ return {st:'idle', hist:[], peak:0, t0:0, cool:0, armed:true, vis:false, seen:-9, y0:0, vy:0, aimX:0, raised:false, last:null}; }
@@ -185,36 +188,43 @@ function processPose(res, t){
   BODY.cx = sm.x; BODY.sy = sm.y; BODY.hy = hy;
   const T = BODY.T;
   const leftIs11 = P[11].x < P[12].x;
+  const xL = Math.min(P[11].x, P[12].x), xR = Math.max(P[11].x, P[12].x);   // vücudun sol ve sağ hizası (omuzlar)
+  BODY.xL = xL; BODY.xR = xR;
   for(const [side, sh, el, wr] of leftIs11 ? [['L',11,13,15],['R',12,14,16]] : [['L',12,14,16],['R',11,13,15]]){
     const A = BODY.arms[side];
-    if(P[wr].v < .35){ if(t - A.seen > .15){ A.hist.length = 0; A.st = 'idle'; } A.vis = false; continue; }
+    // vuruş sırasında bilek bulanıklaşabilir: o sırada görünürlük eşiği düşük tutulur
+    if(P[wr].v < (A.st === 'down' ? .15 : .3) || P[el].v < .15){ if(t - A.seen > .2){ A.hist.length = 0; A.st = 'idle'; } A.vis = false; continue; }
     A.vis = true; A.seen = t;
     const ry = (P[wr].y - P[sh].y)/T;                // bileğin omza göre yüksekliği (aşağı artı, gövde boyu cinsinden)
-    const rx = (P[wr].x - sm.x)/BODY.sw;             // vücut ortasına göre yatay (omuz genişliği cinsinden)
-    const ang = w ? elbowAngle(w[sh], w[el], w[wr]) : elbowAngle(P[sh], P[el], P[wr]);
-    A.hist.push({t, ry, rx, ang}); if(A.hist.length > 10) A.hist.shift();
-    A.raised = ry < .25; A.aimX = rx; A.ang = ang; A.ry = ry;
+    const u = (P[wr].x - xL)/((xR - xL) || .1);      // 0 = sol hiza, 1 = sağ hiza
+    // dirsek açısı: görüntüdeki açı ile 3D açının ortalaması (kol kalkıkken görüntü açısı güvenilir, 3D derinlikten etkilenir)
+    const ang = w ? elbowAngle(w[sh], w[el], w[wr]) : elbowAngle({...P[sh], z:0}, {...P[el], z:0}, {...P[wr], z:0});
+    const ext = -ry;                                  // elin omuz üstündeki yüksekliği (yana kayma bunu değiştirmez)
+    A.hist.push({t, ry, u, ang, ext}); if(A.hist.length > 12) A.hist.shift();
+    A.raised = ry < .35; A.u = u; A.ang = ang; A.ext = ext; A.ry = ry;
     if(A.hist.length < 3) continue;
     const c = A.hist[A.hist.length - 1], o = A.hist[A.hist.length - 3], dtw = Math.max(.02, c.t - o.t);
     const vy = (c.ry - o.ry)/dtw; A.vy = vy;
-    if(!A.armed && ry < A.endY - .25) A.armed = true;          // yeni vuruş için el tekrar kalkmalı
+    if(!A.armed && ry < A.lowY - .2) A.armed = true;           // yeni vuruş için el tekrar kalkmalı
     if(A.st === 'idle'){
-      if(A.armed && t > A.cool && vy > 2.2 && o.ry < .35){
-        let top = o; for(const h of A.hist) if(t - h.t < .3 && h.ry < top.ry) top = h;
-        A.st = 'down'; A.peak = vy; A.t0 = t; A.y0 = top.ry; A.frames = 1;
+      if(A.armed && t > A.cool && vy > 1.8 && o.ry < .35){
+        // başlangıç: son 0,35 sn içindeki en yüksek nokta → hedef sütun ve kolun duruşu buradan
+        let top = o; for(const h of A.hist) if(t - h.t < .35 && h.ry < top.ry) top = h;
+        A.st = 'down'; A.peak = vy; A.t0 = t; A.top = top; A.lowY = c.ry;
+        A.angs = A.hist.filter(h => t - h.t < .35 && h.ry < top.ry + .3); A.top = top;
       }
     } else {
-      A.peak = Math.max(A.peak, vy); A.frames++;
-      // çarpma anı: aşağı hız birden düştü
+      A.peak = Math.max(A.peak, vy); A.lowY = Math.max(A.lowY, c.ry);
+      // kol duruşu vuruşun üst yarısında ölçülür: kol orada görüntü düzlemindedir, alta inince kameraya doğru kısalır
+      if(c.ry < A.top.ry + .3) A.angs.push(c);
       if(vy < A.peak*.3 || t - A.t0 > .55){
         A.st = 'idle'; A.cool = t + .15;
-        const endY = c.ry, drop = endY - A.y0, hipRel = (BODY.hy - BODY.sy)/T;
-        A.endY = endY;
-        const why = drop < .45 ? 'kısa vuruş' : A.peak < 2.8 ? 'yavaş' : endY > hipRel - .12 ? 'kol aşağı indi (dinlenme)' : endY < -.12 ? 'baş üstünde durdu' : '';
+        const drop = A.lowY - A.top.ry;
+        const why = drop < .35 ? 'kısa vuruş' : A.peak < 2.2 ? 'yavaş' : '';
         if(!why){
-          // vuruş anındaki değerler: son iki karenin ortalaması
-          const angI = (c.ang + A.hist[A.hist.length - 2].ang)/2;
-          const ev = {side, t, ang:angI, drop:endY, rx:c.rx, peak:A.peak, rs:rowScore(angI, endY)};
+          const pts = A.angs.length ? A.angs : [A.top];
+          const angM = median(pts.map(h => h.ang)), extM = Math.max(...pts.map(h => h.ext));
+          const ev = {side, t, ang:angM, ext:extM, u:A.top.u, peak:A.peak, rs:rowScore(angM, extM)};
           BODY.events.push(ev); A.armed = false; A.last = ev;
         } else BODY.log.push({t, why});
       }
@@ -229,11 +239,11 @@ function detect(){
   pose.detectForVideo(video, ts, res => processPose(res, ts/1000));
 }
 /* olay → delik: sıra 0 ileri, 1 yakın; sütun 0 sol, 1 orta, 2 sağ */
-const holeOf = ev => ({row:ev.rs >= 0 ? 0 : 1, col:ev.rx < -COLTH ? 0 : ev.rx > COLTH ? 2 : 1});
+const holeOf = ev => ({row:ev.rs >= 0 ? 0 : 1, col:colOf(ev.u)});
 const keys = {};
 addEventListener('keydown', e => {
   const k = {KeyQ:[0,0], KeyW:[0,1], KeyE:[0,2], KeyA:[1,0], KeyS:[1,1], KeyD:[1,2]}[e.code];
-  if(k && !keys[e.code]) BODY.events.push({side:'K', t:performance.now()/1000, kb:k, rs:k[0] === 0 ? 1 : -1, rx:(k[1] - 1)*.8, ang:0, drop:0, peak:0});
+  if(k && !keys[e.code]) BODY.events.push({side:'K', t:performance.now()/1000, kb:k, rs:k[0] === 0 ? 1 : -1, u:[-.5, .5, 1.5][k[1]], ang:0, ext:0, peak:0});
   if(e.code === 'KeyP'){ DEV.panel = !DEV.panel; saveDev(); devLabels(); }
   keys[e.code] = true;
 });
@@ -307,13 +317,13 @@ function calibSwing(e){
   if(CB.vals[st.k].length >= st.n){
     CB.step++;
     if(CB.step >= CSTEP.length){
-      const m = k => ({ang:median(CB.vals[k].map(v => v.ang)), drop:median(CB.vals[k].map(v => v.drop))});
-      const c = {far:m('far'), near:m('near')};
-      const dA = c.far.ang - c.near.ang, dD = c.near.drop - c.far.drop;
+      const m = k => ({ang:median(CB.vals[k].map(v => v.ang)), ext:median(CB.vals[k].map(v => v.ext))});
+      const c = {v:3, far:m('far'), near:m('near')};
+      const dA = c.far.ang - c.near.ang, dE = c.far.ext - c.near.ext;
       CB.done = true;
-      if(dA > 15 || dD > .15){
+      if(dA > 15 || dE > .12){
         CAL = c; try { localStorage.setItem('kosCal', JSON.stringify(CAL)); } catch(e2){}
-        CB.msg = `Kaydedildi. Dirsek farkı ${dA.toFixed(0)}° ${dA > 30 ? '(iyi)' : '(yeterli)'}, yükseklik farkı ${dD.toFixed(2)} ${dD > .25 ? '(iyi)' : '(yeterli)'}`;
+        CB.msg = `Kaydedildi. Dirsek farkı ${dA.toFixed(0)}°, el yüksekliği farkı ${dE.toFixed(2)} (${dA > 25 || dE > .2 ? 'iyi' : 'yeterli'})`;
       } else CB.msg = 'İki vuruş türü birbirine çok benzedi, kaydedilmedi. İleride kolunu tam düzelt, yakında dirseğini iyice kır.';
       calibNoteUpdate();
     }
@@ -360,8 +370,8 @@ function drawHammer(x, y, s, down){
   ctx.restore();
 }
 function aimHole(A){
-  if(!A || !A.vis || !A.raised) return null;
-  return A.aimX < -COLTH ? 0 : A.aimX > COLTH ? 2 : 1;
+  if(!A || !A.vis || !A.raised || A.st === 'down') return null;
+  return {col:colOf(A.u), row:rowScore(A.ang, A.ext) >= 0 ? 0 : 1};
 }
 function render(t){
   const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#8ed6ff'); g.addColorStop(.25, '#c9f0ff'); g.addColorStop(.26, '#7ccf6a'); g.addColorStop(1, '#4fa847');
@@ -371,7 +381,7 @@ function render(t){
   const aims = [aimHole(BODY.arms.L), aimHole(BODY.arms.R)];
   for(const h of HOLES){
     const P = holePos(h);
-    if(aims.includes(h.col) && (phase === 'play' || phase === 'calib')){ ctx.fillStyle = 'rgba(255,210,63,.35)'; ctx.beginPath(); ctx.ellipse(P.x, P.y, P.r*1.35, P.r*.55, 0, 0, 7); ctx.fill(); }
+    if(aims.some(a => a && a.col === h.col && a.row === h.row) && (phase === 'play' || phase === 'calib')){ ctx.fillStyle = 'rgba(255,210,63,.35)'; ctx.beginPath(); ctx.ellipse(P.x, P.y, P.r*1.35, P.r*.55, 0, 0, 7); ctx.fill(); }
     ell(P.x, P.y + P.r*.08, P.r*1.15, P.r*.45, '#6d4527');
     ell(P.x, P.y, P.r, P.r*.36, '#2b1a0e');
   }
@@ -395,6 +405,8 @@ function drawPreview(){
   ctx.translate(px + pw, py); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph); ctx.restore();
   if(BODY.lm){ ctx.strokeStyle = '#3ddc84'; ctx.lineWidth = 3; ctx.lineCap = 'round';
     for(const [a, b] of BONES) if(BODY.lm[a].v > .4 && BODY.lm[b].v > .4){ ctx.beginPath(); ctx.moveTo(px + BODY.lm[a].x/asp*pw, py + BODY.lm[a].y*ph); ctx.lineTo(px + BODY.lm[b].x/asp*pw, py + BODY.lm[b].y*ph); ctx.stroke(); } }
+  if(BODY.ok && BODY.xL !== undefined){ ctx.strokeStyle = 'rgba(255,210,63,.9)'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+    for(const xx of [BODY.xL, BODY.xR]){ ctx.beginPath(); ctx.moveTo(px + xx/asp*pw, py); ctx.lineTo(px + xx/asp*pw, py + ph); ctx.stroke(); } ctx.setLineDash([]); }
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 12); ctx.stroke();
 }
 function drawPanel(){
@@ -402,12 +414,12 @@ function drawPanel(){
   const w = Math.min(470, W - 24), h = 150, x = 12, y = H - h - 12;
   ctx.fillStyle = 'rgba(10,16,32,.82)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.fill();
   ctx.font = '600 13px system-ui,sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = '#fff';
-  const A = BODY.arms, c = CAL || DEFCAL;
-  const arm = (n, a) => a.vis ? `${n}: yükseklik ${(a.ry ?? 0).toFixed(2)} · dirsek ${(a.ang ?? 0).toFixed(0)}° · aşağı hız ${(a.vy ?? 0).toFixed(1)} ${a.st === 'down' ? 'VURUŞ' : ''}` : `${n}: görünmüyor`;
+  const A = BODY.arms, c = calOK() ? CAL : DEFCAL;
+  const arm = (n, a) => a.vis ? `${n}: yükseklik ${(a.ry ?? 0).toFixed(2)} · hiza ${(a.u ?? 0).toFixed(2)} · dirsek ${(a.ang ?? 0).toFixed(0)}° · aşağı hız ${(a.vy ?? 0).toFixed(1)} ${a.st === 'down' ? 'VURUŞ' : a.armed ? '' : '(eli kaldır)'}` : `${n}: görünmüyor`;
   const L = [
-    `Vücut modeli ${loadedModel || '-'} (${delegate}) · ${BODY.fps.toFixed(0)} fps · kişi ${BODY.persons} · kalibrasyon ${CAL ? 'var' : 'yok'} (ileri ${c.far.ang.toFixed(0)}°/${c.far.drop.toFixed(2)}, yakın ${c.near.ang.toFixed(0)}°/${c.near.drop.toFixed(2)})`,
+    `Vücut modeli ${loadedModel || '-'} (${delegate}) · ${BODY.fps.toFixed(0)} fps · kişi ${BODY.persons} · kalibrasyon ${calOK() ? 'var' : 'yok'} (düz ${c.far.ang.toFixed(0)}°/${c.far.ext.toFixed(2)}, kırık ${c.near.ang.toFixed(0)}°/${c.near.ext.toFixed(2)})`,
     arm('sol kol', A.L), arm('sağ kol', A.R),
-    (() => { const e = A.L.last && (!A.R.last || A.L.last.t > A.R.last.t) ? A.L.last : A.R.last; if(!e) return 'son vuruş: —'; const hh = holeOf(e); return `son vuruş: dirsek ${e.ang.toFixed(0)}° · bitiş ${e.drop.toFixed(2)} · sıra oyu ${e.rs.toFixed(2)} → ${hh.row ? 'yakın' : 'ileri'} · yatay ${e.rx.toFixed(2)} → ${['sol', 'orta', 'sağ'][hh.col]}`; })(),
+    (() => { const e = A.L.last && (!A.R.last || A.L.last.t > A.R.last.t) ? A.L.last : A.R.last; if(!e) return 'son vuruş: —'; const hh = holeOf(e); return `son vuruş: dirsek ${e.ang.toFixed(0)}° · el yüksekliği ${e.ext.toFixed(2)} · oy ${e.rs.toFixed(2)} → ${hh.row ? 'yakın' : 'ileri'} · başlangıç hizası ${e.u.toFixed(2)} (0–1 orta) → ${['sol', 'orta', 'sağ'][hh.col]}`; })(),
     `reddedilen: ${BODY.log.slice(-3).map(l => l.why).join(', ') || '—'}`
   ];
   L.forEach((s, i) => ctx.fillText(s, x + 10, y + 10 + i*26, w - 20));
@@ -466,7 +478,7 @@ function endGame(){
   $('again').focus();
 }
 function toMenu(){ phase = 'menu'; $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; calibNoteUpdate(); }
-function calibNoteUpdate(){ $('calibNote').textContent = CAL ? 'Kalibrasyon kayıtlı. Başka çocuk oynayacaksa tekrar yap.' : 'İlk oyundan önce kalibrasyon yapmanı öneririm: 3 ileri, 3 yakın vuruş.'; }
+function calibNoteUpdate(){ $('calibNote').textContent = calOK() ? 'Kalibrasyon kayıtlı. Başka çocuk oynayacaksa tekrar yap.' : 'İlk oyundan önce kalibrasyon yapmanı öneririm: 3 ileri, 3 yakın vuruş.'; }
 function devLabels(){
   $('devPanel').textContent = 'Ölçüm paneli: ' + (DEV.panel ? 'Açık' : 'Kapalı'); $('devPanel').setAttribute('aria-pressed', DEV.panel);
   $('devModel').textContent = 'Model: ' + (DEV.model === 'full' ? 'Full (hassas)' : 'Lite (hızlı)'); $('devModel').setAttribute('aria-pressed', DEV.model === 'full');
