@@ -51,16 +51,17 @@ button:focus-visible,a:focus-visible{outline:4px solid var(--sun);outline-offset
 <div class="screen" id="menu">
   <div class="card">
     <h1>Kartopu Savaşı</h1>
-    <p>Kardan adam sana kartopu atıyor! Kaç, sonra karşısına geçip sen de at.</p>
+    <p>Kardan adam sana kartopu atıyor! Kaç, karşısına geçip sen de at. 10 isabet bir turu bitirir; 3 tur var. 5 kez vurulursan oyun biter.</p>
     <div class="rules">
       <div class="rule"><b>Kaç</b><span>Sağa ya da sola kay</span></div>
       <div class="rule"><b>Yüksek top</b><span>Çömel, üstünden geçsin</span></div>
       <div class="rule"><b>At</b><span>Elini başının üstüne kaldır, hızla öne savur</span></div>
       <div class="rule"><b>Nişan</b><span>Sadece kardan adamın hizasından atılan top isabet eder</span></div>
+      <div class="rule"><b>Hız</b><span>Hızlı atış kafaya, orta atış gövdeye, yavaş atış ayağa gider</span></div>
     </div>
     <button class="go" id="play">Oyna</button>
     <div class="opts"><button class="chip" id="camBtn"></button><button class="chip" id="devPanel"></button><button class="chip" id="devModel"></button></div>
-    <p class="note">Kameraya 2–3 metre uzak dur; sağa sola birer adım atacak yerin olsun. Görüntü cihazdan çıkmaz. Klavye: ← → kay, ↓ çömel, boşluk at. <a href="oyunlar.html">Diğer oyunlar</a></p>
+    <p class="note">Kameraya 2–3 metre uzak dur; sağa sola birer adım atacak yerin olsun. Görüntü cihazdan çıkmaz. Klavye: ← → kay, ↓ çömel, W kafaya, boşluk gövdeye, S ayağa at. <a href="oyunlar.html">Diğer oyunlar</a></p>
   </div>
 </div>
 
@@ -78,7 +79,7 @@ import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@med
 {
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODELS = {lite:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", full:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"};
-const ROUND = 90, LIVES = 5;
+const LIVES = 5;
 const $ = id => document.getElementById(id);
 const cv = $('game'), ctx = cv.getContext('2d'), video = $('cam');
 let W = 0, H = 0;
@@ -229,7 +230,8 @@ function detect(){
 const keys = {};
 addEventListener('keydown', e => {
   if(['ArrowLeft','ArrowRight','ArrowDown','Space'].includes(e.code) && phase !== 'menu') e.preventDefault();
-  if(e.code === 'Space' && !keys.Space) BODY.events.push({side:'K', t:performance.now()/1000, peak:0});
+  const kp = {Space:1, KeyW:2, KeyS:0}[e.code];
+  if(kp !== undefined && !keys[e.code]) BODY.events.push({side:'K', t:performance.now()/1000, peak:0, part:kp});
   if(e.code === 'KeyD'){ DEV.panel = !DEV.panel; saveDev(); devLabels(); }
   keys[e.code] = true;
 });
@@ -242,51 +244,106 @@ function inputX(dt){
 const ducking = () => keys.ArrowDown || (BODY.ok && BODY.duck);
 
 /* ================= OYUN ================= */
-/* dünya: x -1..1 (yatay), z 0 (biz) … 1 (kardan adam) */
-let phase = 'menu', timeLeft = ROUND, countT = 0;
-const HITW = .26, SNOWHP = 5;
-const G = {x:0, me:{lives:LIVES, frost:0, stun:0, throwT:0}, sm:null, balls:[], mine:[], parts:[], texts:[], hits:0, dodges:0, thrown:0, melted:0, flakes:[]};
-function newSnowman(level){
-  return {x:(Math.random() - .5)*1.2, tx:0, hp:SNOWHP, level, wind:0, cool:2, shake:0, mood:0, move:0};
+/* dünya: x -1..1 (yatay), z 0 (biz) … ZS (kardan adam) */
+let phase = 'menu', countT = 0;
+const HITW = .26, ZS = 1.3, NEED = 10, WALLW = .18;
+const WALLS = [-.65, 0, .65];
+const G = {x:0, me:{lives:LIVES, frost:0, stun:0, throwT:0}, sm:null, round:1, roundHits:0, banner:0, balls:[], mine:[], parts:[], texts:[], hits:0, dodges:0, thrown:0, flakes:[], vref:4.5, parts3:[0,0,0]};
+function newSnowman(round){
+  const wall = round === 3 ? WALLS[Math.random()*3 | 0] : 0;
+  return {x:round === 3 ? wall : 0, tx:0, wind:0, cool:2.5, shake:0, move:0, dodgeCool:0, dodgeTo:null, wall, st:'hide', stT:2, peek:0, lean:0};
 }
 function resetGame(){
-  Object.assign(G, {x:0, balls:[], mine:[], parts:[], texts:[], hits:0, dodges:0, thrown:0, melted:0});
+  Object.assign(G, {x:0, round:1, roundHits:0, banner:2.5, balls:[], mine:[], parts:[], texts:[], hits:0, dodges:0, thrown:0, parts3:[0,0,0]});
   G.me = {lives:LIVES, frost:0, stun:0, throwT:0};
   G.sm = newSnowman(1); BODY.events.length = 0;
   G.flakes = Array.from({length:70}, () => ({x:Math.random(), y:Math.random(), s:.5 + Math.random(), v:.03 + Math.random()*.05}));
 }
-function project(x, z, h = 0){ const s = .35/(.35 + z*2.4), y0 = H*.38; return {x:W/2 + x*W*.42*s, y:y0 + (H*.95 - y0)*s - h*H*.5*s, s}; }
+function project(x, z, h = 0){ const s = .35/(.35 + z*2.4), y0 = H*.36; return {x:W/2 + x*W*.42*s, y:y0 + (H*.95 - y0)*s - h*H*.5*s, s}; }
+/* kardan adamın ekrandaki parçaları: ayak, gövde, kafa */
+function smGeom(x){
+  const P = project(x, ZS), u = Math.min(W*.18*P.s*4.8, H*.45);
+  const b1 = u*.42, b2 = u*.32, b3 = u*.23, y = P.y;
+  const y1 = y - b1*.9, y2 = y1 - b1*.75 - b2*.6, y3 = y2 - b2*.75 - b3*.65;
+  return {x:P.x, y, u, b1, b2, b3, y1, y2, y3, feet:y - b1*.35, body:y2, head:y3};
+}
+const isHidden = sm => G.round === 3 && Math.abs(sm.x - sm.wall) < WALLW - .04;
+const wallAt = x => G.round === 3 ? WALLS.find(w => Math.abs(x - w) < WALLW) : undefined;
 function burst(x, y, n, sp = 260, col = '#ffffff'){ for(let i = 0; i < n; i++){ const a = Math.random()*6.28, v = sp*(.3 + Math.random()); G.parts.push({x, y, vx:Math.cos(a)*v, vy:Math.sin(a)*v - 100, life:.8, c:col, r:3 + Math.random()*5}); } }
 function enemyThrow(sm){
-  const lvl = sm.level, high = lvl >= 2 && Math.random() < .3;
-  // hedef: çocuğun şu anki yeri, biraz sapmayla; uçuş süresi seviyeyle kısalır
+  const high = G.round >= 2 && Math.random() < .3;
   const tx = clamp(G.x + (Math.random() - .5)*.25, -1, 1);
-  G.balls.push({x0:sm.x, x1:tx, z:1, t:0, dur:clamp(1.7 - lvl*.12, 1.05, 1.7), high, done:false});
+  G.balls.push({x0:sm.x, x1:tx, z:ZS, t:0, dur:1.75 - G.round*.12, high, done:false});
   SND.whoosh();
 }
-function myThrow(){
-  if(G.me.throwT > 0 || G.me.stun > 0) return;
+/* atış hızı → hedef parça: hızlı kafa, orta gövde, yavaş ayak. Ölçek: kişinin son atışlarının en hızlısı (yavaşça unutulur) */
+function partOf(peak){
+  if(peak > G.vref) G.vref = G.vref*.6 + peak*.4; else G.vref = Math.max(3, G.vref*.995);
+  const r = peak/G.vref;
+  return r >= .8 ? 2 : r < .55 ? 0 : 1;
+}
+const PARTN = ['Ayak', 'Gövde', 'Kafa'];
+function myThrow(ev){
+  if(G.me.throwT > 0 || G.me.stun > 0 || G.banner > 0) return;
+  const part = ev.part !== undefined ? ev.part : partOf(ev.peak);
   G.me.throwT = .45; G.thrown++;
-  G.mine.push({x:G.x, z:0, t:0, dur:.55, done:false, aligned:!!G.sm && Math.abs(G.x - G.sm.x) < HITW});
-  sfx(500, 900, .12, 'sine', .12);
+  G.mine.push({x:G.x, t:0, dur:.75, done:false, part});
+  sfx(500 + part*200, 900 + part*300, .12, 'sine', .12);
+  // 2. turda kardan adam atışı görünce kaçabilir
+  const sm = G.sm;
+  if(G.round === 2 && sm.dodgeCool <= 0 && Math.abs(G.x - sm.x) < HITW*1.3 && Math.random() < .55) startDodge(sm);
+}
+function startDodge(sm){
+  const dir = sm.x > .45 ? -1 : sm.x < -.45 ? 1 : (Math.random() < .5 ? -1 : 1);
+  sm.dodgeTo = clamp(sm.x + dir*(.45 + Math.random()*.15), -.85, .85); sm.dodgeCool = 1.6; sm.lean = dir;
+}
+function nextRound(){
+  G.round++; G.roundHits = 0; G.balls = []; G.mine = [];
+  if(G.round > 3) return endGame(true);
+  G.sm = newSnowman(G.round); G.banner = 2.8;
+  SND.hit();
+}
+function snowmanAI(sm, dt){
+  sm.dodgeCool = Math.max(0, sm.dodgeCool - dt); sm.lean *= Math.pow(.05, dt);
+  const throwCycle = (minC, maxC) => {
+    if(sm.wind > 0){ sm.wind -= dt; if(sm.wind <= 0){ enemyThrow(sm); sm.cool = minC + Math.random()*(maxC - minC); return true; } }
+    else { sm.cool -= dt; if(sm.cool <= 0) sm.wind = .7; }
+    return false;
+  };
+  if(G.round < 3){
+    if(sm.dodgeTo !== null){
+      sm.x += clamp(sm.dodgeTo - sm.x, -1.2*dt, 1.2*dt);
+      if(Math.abs(sm.dodgeTo - sm.x) < .01){ sm.dodgeTo = null; sm.tx = sm.x; }
+    } else {
+      sm.move -= dt;
+      if(sm.move <= 0 || Math.abs(sm.tx - sm.x) < .01){ sm.tx = clamp((Math.random()*2 - 1)*.8, -.8, .8); sm.move = 2.5 + Math.random()*2; }
+      sm.x += clamp(sm.tx - sm.x, -.14*dt, .14*dt);
+      // 2. tur: çocuk karşısında elini kaldırınca kaçmaya çalışır
+      if(G.round === 2 && sm.dodgeCool <= 0 && Math.abs(G.x - sm.x) < HITW && (BODY.arms.L.ry < -.3 || BODY.arms.R.ry < -.3) && Math.random() < dt*2.5) startDodge(sm);
+    }
+    throwCycle(G.round === 1 ? 2.6 : 2.1, G.round === 1 ? 3.4 : 2.9);
+  } else {
+    // 3. tur: duvarın arkasında saklanır → yana çıkar → atar → bekler → geri saklanır; bazen başka duvara geçer
+    sm.stT -= dt;
+    const go = (tx, sp) => { sm.x += clamp(tx - sm.x, -sp*dt, sp*dt); return Math.abs(tx - sm.x) < .01; };
+    if(sm.st === 'hide'){ go(sm.wall, .9); if(sm.stT <= 0){ if(Math.random() < .3){ sm.wall = WALLS.filter(w => w !== sm.wall)[Math.random()*2 | 0]; sm.st = 'switch'; } else { sm.peek = sm.wall + (Math.random() < .5 ? -1 : 1)*(WALLW + .12); if(Math.abs(sm.peek) > .88) sm.peek = sm.wall - Math.sign(sm.peek - sm.wall)*(WALLW + .12); sm.st = 'out'; } } }
+    else if(sm.st === 'switch'){ if(go(sm.wall, .55)){ sm.st = 'hide'; sm.stT = 1 + Math.random()*1.5; } }
+    else if(sm.st === 'out'){ if(go(sm.peek, 1.1)){ sm.st = 'aim'; sm.wind = .7; } }
+    else if(sm.st === 'aim'){ sm.wind -= dt; if(sm.wind <= 0){ enemyThrow(sm); sm.st = 'stay'; sm.stT = 1.2 + Math.random()*.6; } }
+    else if(sm.st === 'stay'){ if(sm.stT <= 0){ sm.st = 'back'; } }
+    else if(sm.st === 'back'){ if(go(sm.wall, 1.1)){ sm.st = 'hide'; sm.stT = 1.2 + Math.random()*1.8; } }
+  }
 }
 function update(dt){
   G.x += (inputX(dt) - G.x)*Math.min(1, dt*14);
   const me = G.me, sm = G.sm;
   me.frost = Math.max(0, me.frost - dt); me.stun = Math.max(0, me.stun - dt); me.throwT = Math.max(0, me.throwT - dt);
-  for(const e of BODY.events.splice(0)) if(phase === 'play') myThrow();
-  if(phase === 'play'){
-    // kardan adam: yavaşça yer değiştirir, kolunu kaldırıp (uyarı) atar
-    sm.move -= dt;
-    if(sm.move <= 0 || Math.abs(sm.tx - sm.x) < .01){ sm.tx = clamp((Math.random()*2 - 1)*.8, -.8, .8); sm.move = 2.5 + Math.random()*2; }
-    const spd = .14 + sm.level*.015;                          // yavaş ve sabit hızla kayar
-    sm.x += clamp(sm.tx - sm.x, -spd*dt, spd*dt);
-    sm.shake = Math.max(0, sm.shake - dt);
-    if(sm.wind > 0){ sm.wind -= dt; if(sm.wind <= 0){ enemyThrow(sm); sm.cool = clamp(2.4 - sm.level*.25, 1.1, 2.4) + Math.random()*.8; } }
-    else { sm.cool -= dt; if(sm.cool <= 0) sm.wind = .7; }
-  }
+  for(const e of BODY.events.splice(0)) if(phase === 'play') myThrow(e);
+  if(G.banner > 0){ G.banner -= dt; }
+  else if(phase === 'play') snowmanAI(sm, dt);
+  sm.shake = Math.max(0, sm.shake - dt);
   for(const b of G.balls){
-    b.t += dt; const k = b.t/b.dur; b.z = 1 - k; b.x = b.x0 + (b.x1 - b.x0)*k;
+    b.t += dt; const k = b.t/b.dur; b.z = ZS*(1 - k); b.x = b.x0 + (b.x1 - b.x0)*k;
     if(k >= 1 && !b.done){
       b.done = true;
       const P = project(b.x, 0, b.high ? .55 : .3);
@@ -297,15 +354,17 @@ function update(dt){
   }
   G.balls = G.balls.filter(b => !b.done);
   for(const m of G.mine){
-    m.t += dt; m.z = m.t/m.dur;
-    if(m.z >= 1 && !m.done){
+    m.t += dt;
+    if(m.t >= m.dur && !m.done){
       m.done = true;
-      const P = project(m.x, 1, .5);
-      if(m.aligned){
-        sm.hp--; sm.shake = .4; G.hits++; SND.hit(); burst(P.x, P.y, 26, 300);
-        G.texts.push({x:P.x, y:P.y - 60, t:sm.hp > 0 ? 'İsabet!' : 'Eridi!', c:'#ffd23f', life:1});
-        if(sm.hp <= 0){ G.melted++; burst(P.x, P.y, 60, 500, '#dff1ff'); G.sm = newSnowman(sm.level + 1); G.sm.cool = 2.5; G.texts.push({x:W/2, y:H*.3, t:`Yeni kardan adam! Seviye ${G.sm.level}`, c:'#fff', life:1.6}); }
-      } else { SND.splat(); burst(P.x, project(m.x, 1).y, 10, 150); G.texts.push({x:P.x, y:P.y - 40, t:'Iska', c:'#9fb4cc', life:.7}); }
+      const g = smGeom(m.x), y = [g.feet, g.body, g.head][m.part];
+      const wall = wallAt(m.x);
+      if(wall !== undefined){ SND.splat(); burst(g.x, y, 14, 200); G.texts.push({x:g.x, y:y - 30, t:'Duvara çarptı', c:'#9fb4cc', life:.8}); }
+      else if(Math.abs(m.x - sm.x) < HITW && !isHidden(sm)){
+        sm.shake = .4; G.hits++; G.roundHits++; G.parts3[m.part]++; SND.hit(); burst(g.x, y, 26, 300);
+        G.texts.push({x:g.x, y:y - 50, t:PARTN[m.part] + '!', c:'#ffd23f', life:1});
+        if(G.roundHits >= NEED){ burst(g.x, g.y2, 70, 520, '#dff1ff'); G.texts.push({x:W/2, y:H*.3, t:'Tur tamam!', c:'#fff', life:1.6}); nextRound(); return; }
+      } else { SND.splat(); burst(g.x, g.y, 10, 150); G.texts.push({x:g.x, y:y - 40, t:'Iska', c:'#9fb4cc', life:.7}); }
     }
   }
   G.mine = G.mine.filter(m => !m.done);
@@ -326,29 +385,35 @@ function outlined(t, x, y, size, fill){
 }
 function snowball(x, y, r){ circle(x + r*.12, y + r*.15, r, 'rgba(60,90,140,.25)'); circle(x, y, r, '#ffffff'); circle(x - r*.3, y - r*.3, r*.35, '#eaf6ff'); ctx.strokeStyle = '#b9d4ee'; ctx.lineWidth = Math.max(1, r*.08); ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke(); }
 function drawSnowman(sm, t){
-  const P = project(sm.x, 1), u = Math.min(W*.18*P.s*4.8, H*.5), sh = sm.shake > 0 ? Math.sin(sm.shake*60)*u*.05 : 0;
-  const x = P.x + sh, y = P.y, melt = 1 - sm.hp/SNOWHP*.25 - .75;
+  const g = smGeom(sm.x), sh = sm.shake > 0 ? Math.sin(sm.shake*60)*g.u*.05 : 0;
+  const x = g.x + sh, {u, b1, b2, b3, y, y1, y2, y3} = g;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(sm.lean*.18); ctx.translate(-x, -y);
   ell(x, y, u*.55, u*.1, 'rgba(60,90,140,.2)');
-  const b1 = u*.42, b2 = u*.32, b3 = u*.23;
-  const y1 = y - b1*.9, y2 = y1 - b1*.75 - b2*.6, y3 = y2 - b2*.75 - b3*.65;
   for(const [yy, r] of [[y1, b1], [y2, b2], [y3, b3]]){ circle(x, yy, r, '#ffffff'); circle(x - r*.35, yy - r*.35, r*.3, '#f2f9ff'); ctx.strokeStyle = '#c7dcf0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, yy, r, 0, 7); ctx.stroke(); }
   for(let i = 0; i < 3; i++) circle(x, y2 - b2*.4 + i*b2*.38, b2*.08, '#1b2a4a');
-  // atkı ve şapka
   rrect(x - b3*.95, y3 + b3*.55, b3*1.9, b3*.32, b3*.15, '#ff4f7a'); rrect(x + b3*.3, y3 + b3*.7, b3*.3, b3*.8, b3*.1, '#e8382d');
   rrect(x - b3*.8, y3 - b3*1.05, b3*1.6, b3*.18, 4, '#1b2a4a'); rrect(x - b3*.55, y3 - b3*1.75, b3*1.1, b3*.75, 6, '#1b2a4a'); rrect(x - b3*.55, y3 - b3*1.2, b3*1.1, b3*.14, 0, '#4d6bff');
   const angry = sm.wind > 0;
   for(const s of [-1, 1]){ circle(x + s*b3*.35, y3 - b3*.15, b3*.11, '#1b2a4a'); if(angry){ ctx.strokeStyle = '#1b2a4a'; ctx.lineWidth = Math.max(2, b3*.08); ctx.beginPath(); ctx.moveTo(x + s*b3*.55, y3 - b3*.45); ctx.lineTo(x + s*b3*.15, y3 - b3*.32); ctx.stroke(); } }
   ctx.fillStyle = '#ff9f1c'; ctx.beginPath(); ctx.moveTo(x, y3 - b3*.02); ctx.lineTo(x + b3*.7, y3 + b3*.12); ctx.lineTo(x, y3 + b3*.2); ctx.fill();
-  // kollar: atmadan önce sağ kol yukarı kalkar (uyarı)
   ctx.strokeStyle = '#6d4527'; ctx.lineWidth = Math.max(3, u*.03); ctx.lineCap = 'round';
   const wind = sm.wind > 0 ? 1 - sm.wind/.7 : 0;
   ctx.beginPath(); ctx.moveTo(x - b2*.9, y2); ctx.lineTo(x - b2*1.8, y2 + b2*.4); ctx.stroke();
   const ax = x + b2*.9, ay = y2, ang = -.3 - wind*2.2, ex = ax + Math.cos(ang)*b2*1.1, ey = ay + Math.sin(ang)*b2*1.1;
   ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ex, ey); ctx.stroke();
   if(sm.wind > 0) snowball(ex, ey, b3*.4);
-  // can
-  for(let i = 0; i < SNOWHP; i++) circle(x - (SNOWHP - 1)*b3*.25 + i*b3*.5, y3 - b3*2.1, b3*.17, i < sm.hp ? '#4d6bff' : 'rgba(27,42,74,.2)');
-  if(sm.wind > 0) outlined('!', x, y3 - b3*2.7, b3*.9, '#ff4f7a');
+  ctx.restore();
+  if(sm.wind > 0) outlined('!', x, y3 - b3*2.2, b3*.9, '#ff4f7a');
+}
+function drawWalls(){
+  if(G.round !== 3) return;
+  for(const wx of WALLS){
+    const a = project(wx - WALLW, ZS - .05), b = project(wx + WALLW, ZS - .05), g = smGeom(wx), top = g.y3 - g.b3*1.95;
+    rrect(a.x, top, b.x - a.x, a.y - top + 4, 14, '#eef6ff');
+    ctx.strokeStyle = '#b9d4ee'; ctx.lineWidth = 2;
+    const bw = (b.x - a.x)/4, bh = (a.y - top)/5;
+    for(let r = 0; r < 5; r++) for(let c = 0; c < 4; c++){ ctx.beginPath(); ctx.roundRect(a.x + c*bw + (r % 2 ? bw/2 : 0) - (r % 2 && c === 3 ? bw/2 : 0), top + r*bh, bw, bh, 6); ctx.stroke(); }
+  }
 }
 function drawKid(t){
   const P = project(G.x, 0), u = Math.min(W*.12, H*.2), duck = ducking(), x = P.x, base = H + u*.05;
@@ -362,16 +427,24 @@ function drawKid(t){
   for(const s of [-1, 1]) circle(x + s*u*.55, base - u*(.75 + (s > 0 ? th*.9 : 0))*hgt, u*.16, '#ff4f7a');
   ctx.globalAlpha = 1;
 }
+/* bizim topumuz: elimizden çıkar, kavis çizerek seçilen parçaya (ayak / gövde / kafa) gider */
+function myBallPos(m){
+  const k = clamp(m.t/m.dur, 0, 1), g = smGeom(m.x), u = Math.min(W*.12, H*.2);
+  const sx = project(m.x, 0).x + u*.5, sy = H - u*1.6, ex = g.x, ey = [g.feet, g.body, g.head][m.part];
+  const e = 1 - (1 - k)**1.6;
+  return {x:sx + (ex - sx)*e, y:sy + (ey - sy)*e - Math.sin(k*Math.PI)*H*.12, r:Math.max(4, (W*.04)*(1 - e) + W*.012*e)};
+}
 function render(t){
-  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#8fc9ff'); g.addColorStop(.38, '#dff0ff'); g.addColorStop(.381, '#f4faff'); g.addColorStop(1, '#ffffff');
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#8fc9ff'); g.addColorStop(.36, '#dff0ff'); g.addColorStop(.361, '#f4faff'); g.addColorStop(1, '#ffffff');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  for(let i = 0; i < 7; i++){ const x = W*(i/6), h = H*(.1 + (i % 3)*.04); ctx.fillStyle = i % 2 ? '#b9d4ee' : '#cfe3f5'; ctx.beginPath(); ctx.moveTo(x - W*.12, H*.385); ctx.lineTo(x, H*.385 - h); ctx.lineTo(x + W*.12, H*.385); ctx.fill(); }
-  for(let i = 0; i < 9; i++){ const x = W*(.04 + i*.115), y = H*.385; ctx.fillStyle = '#2f8f4e'; ctx.beginPath(); ctx.moveTo(x - 14, y); ctx.lineTo(x, y - 46); ctx.lineTo(x + 14, y); ctx.fill(); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 7, y - 26); ctx.lineTo(x, y - 46); ctx.lineTo(x + 7, y - 26); ctx.fill(); }
-  // yer işaretleri: gelen topun düşeceği yer
+  for(let i = 0; i < 7; i++){ const x = W*(i/6), h = H*(.1 + (i % 3)*.04); ctx.fillStyle = i % 2 ? '#b9d4ee' : '#cfe3f5'; ctx.beginPath(); ctx.moveTo(x - W*.12, H*.365); ctx.lineTo(x, H*.365 - h); ctx.lineTo(x + W*.12, H*.365); ctx.fill(); }
+  for(let i = 0; i < 9; i++){ const x = W*(.04 + i*.115), y = H*.365; ctx.fillStyle = '#2f8f4e'; ctx.beginPath(); ctx.moveTo(x - 12, y); ctx.lineTo(x, y - 40); ctx.lineTo(x + 12, y); ctx.fill(); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(x - 6, y - 22); ctx.lineTo(x, y - 40); ctx.lineTo(x + 6, y - 22); ctx.fill(); }
   for(const b of G.balls){ const k = b.t/b.dur, L = project(b.x1, 0); ctx.globalAlpha = .25 + .5*k; ell(L.x, H - 14, W*.42*.26*L.s*(.6 + .4*k), 12, b.high ? '#ffb627' : '#ff4f7a'); ctx.globalAlpha = 1; }
   if(G.sm) drawSnowman(G.sm, t);
-  for(const m of G.mine){ const P = project(m.x, m.z, .45 + Math.sin(m.z*Math.PI)*.5); snowball(P.x, P.y, Math.max(4, W*.035*P.s)); }
-  for(const b of G.balls){ const P = project(b.x, b.z, (b.high ? .55 : .3) + Math.sin((1 - b.z)*Math.PI)*.35); snowball(P.x, P.y, Math.max(4, W*.05*P.s)); }
+  drawWalls();
+  if(G.sm){ const gg = smGeom(G.sm.x); for(let i = 0; i < NEED; i++) circle(gg.x - (NEED - 1)*9 + i*18, gg.y3 - gg.b3*2.8, 6, i < G.roundHits ? '#ffd23f' : 'rgba(27,42,74,.2)'); }
+  for(const m of G.mine){ const p = myBallPos(m); snowball(p.x, p.y, p.r); }
+  for(const b of G.balls){ const P = project(b.x, b.z, (b.high ? .55 : .3) + Math.sin((1 - b.z/ZS)*Math.PI)*.35); snowball(P.x, P.y, Math.max(4, W*.05*P.s)); }
   drawKid(t);
   for(const p of G.parts){ ctx.globalAlpha = Math.max(0, p.life/.8); circle(p.x, p.y, p.r, p.c); }
   ctx.globalAlpha = 1;
@@ -382,12 +455,16 @@ function render(t){
   if(G.me.frost > 0){ ctx.fillStyle = `rgba(220,240,255,${G.me.frost*.5})`; ctx.fillRect(0, 0, W, H); }
   if(phase === 'play' || phase === 'count'){
     for(let i = 0; i < LIVES; i++) outlined('❄', 30 + i*34, H - 30, 28, i < G.me.lives ? '#4d6bff' : 'rgba(27,42,74,.2)');
-    if(G.sm && Math.abs(G.sm.x - G.x) < HITW){
-      const a = project(G.x, 0), b = project(G.sm.x, 1);
+    if(G.sm && G.banner <= 0 && Math.abs(G.sm.x - G.x) < HITW && !isHidden(G.sm)){
+      const a = project(G.x, 0), b = project(G.sm.x, ZS);
       ctx.strokeStyle = 'rgba(61,220,132,.55)'; ctx.lineWidth = 10; ctx.setLineDash([16, 12]); ctx.beginPath(); ctx.moveTo(a.x, H - 40); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
       outlined('Hizasındasın: AT!', W/2, H*.66, Math.min(30, W*.042), '#3ddc84');
     }
     if(ducking()) outlined('Çömeldin', W/2, H*.58, Math.min(26, W*.035), '#fff');
+    if(G.banner > 0 && phase === 'play'){
+      const msg = ['', '1. Tur: Kardan adamı 10 kez vur!', '2. Tur: Kardan adam kaçıyor!', '3. Tur: Duvarların arkasına saklanıyor!'][G.round];
+      outlined(msg, W/2, H*.25, Math.min(40, W*.05), '#ffd23f');
+    }
   }
 }
 const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24]];
@@ -408,7 +485,7 @@ function drawPanel(){
   const A = BODY.arms;
   const L = [
     `Vücut modeli ${loadedModel || '-'} (${delegate}) · ${BODY.fps.toFixed(0)} fps · kişi ${BODY.persons} · kamera ${camFacing === 'user' ? 'ön' : 'arka'}`,
-    `konum ${BODY.px.toFixed(2)} · çömelme ${BODY.dy.toFixed(2)} (eşik 0,28) ${BODY.duck ? 'ÇÖMELDİ' : ''}`,
+    `konum ${BODY.px.toFixed(2)} · atış hızı ölçeği ${G.vref.toFixed(1)} · çömelme ${BODY.dy.toFixed(2)} (eşik 0,28) ${BODY.duck ? 'ÇÖMELDİ' : ''}`,
     ...[['sol', A.L], ['sağ', A.R]].map(([n, a]) => a.vis ? `${n} el: yükseklik ${a.ry.toFixed(2)} · aşağı hız ${a.vy.toFixed(1)} ${a.st === 'down' ? 'ATIŞ' : a.armed ? '' : '(eli kaldır)'}` : `${n} el: görünmüyor`),
     `reddedilen: ${BODY.log.slice(-3).map(l => l.why).join(', ') || '—'}`
   ];
@@ -421,15 +498,14 @@ function loop(){
   const now = performance.now(), dt = Math.min(.05, (now - last)/1000), t = now/1000; last = now;
   detect();
   if(phase === 'count'){ countT -= dt; if(countT <= 0){ phase = 'play'; BODY.calib = false; sfx(400, 900, .25, 'square', .12); } }
-  if(phase === 'play'){ timeLeft -= dt; if(timeLeft <= 0){ timeLeft = 0; endGame(true); } }
   if(phase === 'play' || phase === 'count') update(dt);
   render(t);
   if(phase !== 'menu'){ drawPreview(); drawPanel(); }
   if(phase === 'count'){ outlined(String(Math.ceil(countT)), W/2, H*.45, Math.round(Math.min(W, H)*.22), '#4d6bff'); outlined('Dik dur…', W/2, H*.62, Math.min(30, W*.045), '#1b2a4a'); }
   if((phase === 'play' || phase === 'count') && camOK && !BODY.ok) outlined('Kameranın önüne geç, omuzların görünsün', W/2, H*.2, Math.min(26, W*.035), '#ff4f7a');
   if((phase === 'play' || phase === 'count') && !camOK && note2) outlined(note2, W/2, H*.2, Math.min(22, W*.03), '#1b2a4a');
-  $('hudL').textContent = `Vuruş: ${G.hits} · Eriyen: ${G.melted}`;
-  $('hudR').textContent = `${Math.ceil(timeLeft)}`;
+  $('hudL').textContent = `${Math.min(3, G.round)}. Tur · İsabet ${G.roundHits}/${NEED}`;
+  $('hudR').textContent = `Can: ${G.me.lives}`;
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
@@ -442,13 +518,13 @@ async function startGame(){
   if(camOK && (!pose || loadedModel !== DEV.model)){ try { await initModel(); } catch(e){ camOK = false; note2 = 'Hareket algılayıcı yüklenemedi (internet?), klavyeyle oynayabilirsin'; } }
   b.disabled = false;
   resetGame(); BODY.base = null; BODY.calib = true; BODY.duck = false;
-  timeLeft = ROUND; countT = 3; phase = 'count';
+  countT = 3; phase = 'count';
   $('menu').hidden = true; $('over').hidden = true; $('hud').hidden = false;
 }
-function endGame(timeUp){
+function endGame(won){
   phase = 'end'; $('hud').hidden = true; $('over').hidden = false;
-  $('overT').textContent = timeUp ? 'Süre doldu!' : 'Kar tanelerin bitti!';
-  $('result').textContent = `${G.hits} isabet, ${G.melted} kardan adam erittin, ${G.dodges} toptan kaçtın. ${G.thrown} kartopu attın.`;
+  $('overT').textContent = won ? 'Kazandın! Üç turu da bitirdin!' : 'Kar tanelerin bitti!';
+  $('result').textContent = `${Math.min(3, G.round)}. tura kadar geldin. ${G.hits} isabet (kafa ${G.parts3[2]}, gövde ${G.parts3[1]}, ayak ${G.parts3[0]}), ${G.dodges} toptan kaçtın, ${G.thrown} kartopu attın.`;
   $('again').focus();
 }
 function toMenu(){ phase = 'menu'; $('hud').hidden = true; $('over').hidden = true; $('menu').hidden = false; }
@@ -464,7 +540,7 @@ $('camBtn').addEventListener('click', switchCam); $('camHud').addEventListener('
 $('devPanel').addEventListener('click', () => { DEV.panel = !DEV.panel; saveDev(); devLabels(); });
 $('devModel').addEventListener('click', () => { DEV.model = DEV.model === 'full' ? 'lite' : 'full'; saveDev(); devLabels(); });
 devLabels(); camLabels();
-globalThis.__KAR = {BODY, G, startGame, get phase(){ return phase; }, keys};
+globalThis.__KAR = {BODY, G, startGame, get phase(){ return phase; }, keys, isHidden, WALLS, HITW, WALLW};
 }
 </script>
 </body>
